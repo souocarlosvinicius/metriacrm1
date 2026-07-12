@@ -1,0 +1,323 @@
+{
+  "properties": [
+    {
+      "title": "Apartamento em Ipanema",
+      "type": "Apartamento",
+      "condition": "Usado",
+      "description": "Excelente apartamento em Ipanema, a poucos metros da praia. Totalmente reformado, com acabamentos premium, piso em taco original restaurado, ar-condicionado em todos os cômodos e armários planejados de altíssima qualidade. Living espaçoso com iluminação planejada, copa-cozinha equipada e área de serviço completa com dependências.",
+      "modality": "Venda",
+      "price": 2450000,
+      "condo": 1200,
+      "iptu": 350,
+      "address": "Avenida Vieira Souto, 320",
+      "neighborhood": "Ipanema",
+      "city": "Rio de Janeiro / RJ",
+      "bedrooms": 3,
+      "suites": 1,
+      "bathrooms": 3,
+      "parkingSpots": 2,
+      "area": 110,
+      "builtArea": 100,
+      "photos": [
+        "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?auto=format&fit=crop&w=800&q=80",
+        "https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?auto=format&fit=crop&w=800&q=80",
+        "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&w=800&q=80"
+      ],
+      "amenities": [
+        "Portaria 24h",
+        "Salão de Festas",
+        "Churrasqueira"
+      ],
+      "status": "DISPONÍVEL",
+      "captadorName": "Carlos Eduardo",
+      "captadorPhone": "(11) 98765-4321",
+      "createdAt": "2026-06-29T21:06:23.963Z",
+      "code": "IM-5031"
+    },
+    {
+      "title": "Loft Vila Madalena",
+      "type": "Apartamento",
+      "condition": "Novo",
+      "description": "Charmoso loft duplex na Vila Madalena, com arquitetura industrial moderna, pé-direito duplo e paredes de tijolo aparente. Grandes janelas de ferro proporcionam luz natural abundante durante todo o dia. Totalmente mobiliado com móveis de design e decoração contemporânea sofisticada. Ideal para solteiros ou casais jovens que buscam estilo e praticidade.",
+      "modality": "Aluguel",
+      "price": 8500,
+      "condo": 800,
+      "iptu": 150,
+      "address": "Rua Aspicuelta, 450",
+      "neighborhood": "Vila Madalena",
+      "city": "São Paulo / SP",
+      "bedrooms": 1,
+      "suites": 1,
+      "bathrooms": 2,
+      "parkingSpots": 1,
+      "area": 65,
+      "builtArea": 65,
+      "photos": [
+        "https://images.unsplash.com/photo-1536376072261-38c75010e6c9?auto=format&fit=crop&w=800&q=80",
+        "https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=800&q=80"
+      ],
+      "amenities": [
+        "Academia",
+        "Churrasqueira",
+        "Piscina",
+        "Portaria 24h"
+      ],
+      "status": "EM PROPOSTA",
+      "captadorName": "Carlos Eduardo",
+      "captadorPhone": "(11) 98765-4321",
+      "createdAt": "2026-06-29T21:06:23.963Z",
+      "code": "IM-5694"
+    },
+    {
+      "title": "Casa de Praia Búzios",
+      "type": "Casa",
+      "condition": "Usado",
+      "description": "Casa espetacular em condomínio fechado na Praia de Geribá. Projeto arquitetônico moderno que integra perfeitamente as áreas internas e externas. Possui uma linda piscina de borda infinita integrada à área de churrasqueira, deck de madeira, sauna úmida e paisagismo tropical impecável. Vista privilegiada e segurança 24 horas.",
+      "modality": "Venda",
+      "price": 4200000,
+      "condo": 1800,
+      "iptu": 600,
+      "address": "Condomínio Geribá Hills, Casa 12",
+      "neighborhood": "Geribá",
+      "city": "Armação dos Búzios / RJ",
+      "bedrooms": 5,
+      "suites": 4,
+      "bathrooms": 6,
+      "parkingSpots": 4,
+      "area": 320,
+      "builtArea": 240,
+      "photos": [
+        "https://images.unsplash.com/photo-1499793983690-e29da59ef1c2?auto=format&fit=crop&w=800&q=80",
+        "https://images.unsplash.com/photo-1512915922686-57c11dde9b6b?auto=format&fit=crop&w=800&q=80",
+        "https://images.unsplash.com/photo-1613977257363-707ba9348227?auto=format&fit=crop&w=800&q=80"
+      ],
+      "amenities": [
+        "Piscina",
+        "Churrasqueira",
+        "Playground",
+        "Portaria 24h"
+      ],
+      "status": "DISPONÍVEL",
+      "createdAt": "2026-06-29T21:06:23.963Z",
+      "code": "IM-6971"
+    },
+    {
+      "title": "Cobertura Duplex no Leblon",
+      "type": "Apartamento",
+      "condition": "Usado",
+      "description": "Cobertura espetacular no Leblon com vista panorâmica para o Cristo Redentor e para a Lagoa. Primeiro pavimento com living em 3 ambientes, varanda integrada, 3 amplas suítes com closets e copa-cozinha planejada. Segundo pavimento com salão multiuso, home theater, lavabo, sauna e excelente terraço privativo com piscina e área gourmet completa.",
+      "modality": "Venda",
+      "price": 12500000,
+      "condo": 3500,
+      "iptu": 1200,
+      "address": "Rua Cupertino Durão, 140",
+      "neighborhood": "Leblon",
+      "city": "Rio de Janeiro / RJ",
+      "bedrooms": 4,
+      "suites": 3,
+      "bathrooms": 5,
+      "parkingSpots": 3,
+      "area": 280,
+      "builtArea": 220,
+      "photos": [
+        "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=800&q=80",
+        "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=800&q=80"
+      ],
+      "amenities": [
+        "Piscina",
+        "Churrasqueira",
+        "Salão de Festas",
+        "Portaria 24h"
+      ],
+      "status": "DISPONÍVEL",
+      "createdAt": "2026-06-29T21:06:23.963Z",
+      "code": "IM-4643"
+    },
+    {
+      "title": "Casa de Campo em Atibaia",
+      "type": "Casa",
+      "condition": "Usado",
+      "description": "Belíssima casa de campo em Atibaia, ideal para quem busca paz, conforto e contato direto com a natureza. Localizada em condomínio de alto padrão, conta com pomar privativo, quadra de tênis de saibro, piscina aquecida, espaço gourmet com forno de pizza a lenha, lareira e amplas suítes com vista para as montanhas.",
+      "modality": "Temporada",
+      "price": 1500,
+      "condo": 900,
+      "iptu": 250,
+      "address": "Condomínio Estância das Flores, Gleba B",
+      "neighborhood": "Estância",
+      "city": "Atibaia / SP",
+      "bedrooms": 4,
+      "suites": 4,
+      "bathrooms": 5,
+      "parkingSpots": 6,
+      "area": 450,
+      "builtArea": 350,
+      "photos": [
+        "https://images.unsplash.com/photo-1513584684374-8bab748fbf90?auto=format&fit=crop&w=800&q=80",
+        "https://images.unsplash.com/photo-1580587771525-78b9dba3b914?auto=format&fit=crop&w=800&q=80"
+      ],
+      "amenities": [
+        "Piscina",
+        "Churrasqueira",
+        "Playground",
+        "Academia",
+        "Portaria 24h"
+      ],
+      "status": "DISPONÍVEL",
+      "createdAt": "2026-06-29T21:06:23.963Z",
+      "code": "IM-1209"
+    }
+  ],
+  "clients": [
+    {
+      "name": "Ana Carolina Silva",
+      "phone": "(21) 98112-4455",
+      "document": "124.556.789-01",
+      "email": "carol.silva@outlook.com",
+      "profileType": "Lead",
+      "objective": "Venda",
+      "propertyType": "Apartamento",
+      "minBudget": 2000000,
+      "maxBudget": 3000000,
+      "observations": "Procura apartamento de 3 quartos em Ipanema ou Leblon com vaga de garagem. Prefere andar alto.",
+      "status": "Novo",
+      "birthday": "1993-06-29",
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    },
+    {
+      "name": "Ricardo Menezes",
+      "phone": "(11) 99344-2233",
+      "document": "235.667.112-34",
+      "email": "ricardo.menezes@gmail.com",
+      "profileType": "Comprador",
+      "objective": "Aluguel",
+      "propertyType": "Apartamento",
+      "minBudget": 7000,
+      "maxBudget": 10000,
+      "observations": "Aguardando aprovação de proposta de aluguel no Loft da Vila Madalena. Fiador já validado.",
+      "status": "Proposta",
+      "birthday": "1988-06-30",
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    },
+    {
+      "name": "Beatriz Oliveira",
+      "phone": "(21) 98877-6655",
+      "document": "099.334.556-21",
+      "email": "beatriz.oliveira@uol.com.br",
+      "profileType": "Lead",
+      "objective": "Venda",
+      "propertyType": "Apartamento",
+      "minBudget": 1500000,
+      "maxBudget": 2200000,
+      "observations": "Lead qualificado. Buscando apartamento de 2 ou 3 dormitórios próximo ao metrô no Flamengo ou Botafogo.",
+      "status": "Em Atendimento",
+      "birthday": "1995-07-02",
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    },
+    {
+      "name": "João Pedro Fonseca",
+      "phone": "(11) 97112-9988",
+      "document": "110.223.334-55",
+      "email": "jp.fonseca@metalurgica.com.br",
+      "profileType": "Proprietário",
+      "objective": "Venda",
+      "propertyType": "Comercial",
+      "minBudget": 0,
+      "maxBudget": 0,
+      "observations": "Dono de galpão industrial na Lapa para venda direta ou locação de longo prazo.",
+      "status": "Novo",
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    },
+    {
+      "name": "Mariana Santos",
+      "phone": "(11) 99112-3344",
+      "document": "321.456.987-99",
+      "email": "mari.santos.adv@gmail.com",
+      "profileType": "Locatário",
+      "objective": "Aluguel",
+      "propertyType": "Casa",
+      "minBudget": 5000,
+      "maxBudget": 8000,
+      "observations": "Visita agendada em casa de condomínio fechado em Alphaville. Família com dois pets.",
+      "status": "Em Atendimento",
+      "birthday": "1990-07-03",
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    }
+  ],
+  "tasks": [
+    {
+      "date": "2026-06-29",
+      "time": "09:00",
+      "title": "Visita: Cobertura Leblon",
+      "clientName": "Ricardo Albuquerque",
+      "description": "Apresentação detalhada da cobertura duplex, com foco no terraço privativo e área de lazer.",
+      "type": "VISITA",
+      "completed": true,
+      "propertyTitle": "Cobertura Duplex no Leblon",
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    },
+    {
+      "date": "2026-06-29",
+      "time": "10:30",
+      "title": "Follow-up: Reserva Prime",
+      "clientName": "Beatriz Oliveira",
+      "description": "Ligar para verificar a proposta de compra enviada na semana passada. Tirar dúvidas tributárias.",
+      "type": "FOLLOW-UP",
+      "completed": false,
+      "propertyTitle": "Apartamento em Ipanema",
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    },
+    {
+      "date": "2026-06-29",
+      "time": "14:00",
+      "title": "Assinatura de Contrato",
+      "clientName": "Ricardo Menezes",
+      "description": "Assinatura digital de contrato de locação do Loft Vila Madalena. Sala 402 - Escritório Central.",
+      "type": "CONTRATO",
+      "completed": false,
+      "propertyTitle": "Loft Vila Madalena",
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    },
+    {
+      "date": "2026-06-29",
+      "time": "16:30",
+      "title": "Visita: Terreno Barra",
+      "clientName": "Família Costa",
+      "description": "Clientes interessados em lote plano de 600m² para construção residencial unifamiliar.",
+      "type": "VISITA",
+      "completed": false,
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    },
+    {
+      "date": "2026-06-30",
+      "time": "10:00",
+      "title": "Visita: Casa Condomínio Alpha",
+      "clientName": "Maria Souza",
+      "description": "Apresentar casa moderna de 4 suítes. Cliente preza muito por segurança e área comum de lazer.",
+      "type": "VISITA",
+      "completed": false,
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    },
+    {
+      "date": "2026-07-01",
+      "time": "16:00",
+      "title": "Vistoria: Loft Vila Madalena",
+      "clientName": "João Victor (Vistoriador)",
+      "description": "Realizar vistoria de entrada com fotos detalhadas do imóvel e do inventário.",
+      "type": "OUTRO",
+      "completed": false,
+      "propertyTitle": "Loft Vila Madalena",
+      "createdAt": "2026-06-29T21:06:23.963Z"
+    }
+  ],
+  "users": [
+    {
+      "username": "vega",
+      "password": "123",
+      "name": "Carlos Eduardo",
+      "email": "carlos@metriacrm.com",
+      "avatarUrl": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80",
+      "role": "Corretor Sênior",
+      "phone": "(11) 98765-4321"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Metria CRM",
+  "description": "Sistema de CRM Imobiliário completo para corretores e imobiliárias, com gestão de imóveis (venda, aluguel e temporada), contatos/leads e agenda de tarefas diárias.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

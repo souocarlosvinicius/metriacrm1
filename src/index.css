@@ -1,0 +1,47 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  /* Custom Emerald Estate Luxe Palette */
+  --color-primary: #004d3e; /* Deep royal emerald green */
+  --color-on-primary: #ffffff;
+  --color-primary-container: #d0f0e3;
+  --color-on-primary-container: #00281e;
+  
+  --color-secondary: #cfa85c; /* Luxury warm polished gold brass */
+  --color-on-secondary: #352600;
+  --color-secondary-container: #f8dfa1;
+  --color-on-secondary-container: #261b00;
+
+  --color-background: #fafcf9; /* Extremely clean crisp off-white */
+  --color-surface: #ffffff;
+  --color-on-surface: #141a16;
+  --color-on-surface-variant: #49544c;
+  --color-outline: #7c897f;
+  --color-outline-variant: #c3cfc6;
+
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f2f6f3;
+  --color-surface-container: #ebf0ec;
+  --color-surface-container-high: #e3eae4;
+  --color-surface-container-highest: #dce2dd;
+}
+
+/* Base resets & scrollbars helper */
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-background);
+  color: var(--color-on-surface);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

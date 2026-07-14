@@ -17,8 +17,9 @@ import {
   User,
   HeartHandshake
 } from "lucide-react";
-import { User as UserType, OrganizationMember, OrganizationInvite, UserRole } from "../types";
+import { User as UserType, OrganizationMember, OrganizationInvite, UserRole, Organization } from "../types";
 import { apiFetch } from "../api";
+import { PlanGuard } from "./PlanGuard";
 
 interface TeamViewProps {
   currentUser: UserType;
@@ -27,6 +28,7 @@ interface TeamViewProps {
 export default function TeamView({ currentUser }: TeamViewProps) {
   const [members, setMembers] = useState<OrganizationMember[]>([]);
   const [invites, setInvites] = useState<OrganizationInvite[]>([]);
+  const [organization, setOrganization] = useState<Organization | null>(null);
   const [loading, setLoading] = useState(true);
   const [submittingInvite, setSubmittingInvite] = useState(false);
   const [updatingMember, setUpdatingMember] = useState<string | null>(null);
@@ -57,9 +59,10 @@ export default function TeamView({ currentUser }: TeamViewProps) {
     setLoading(true);
     setError(null);
     try {
-      const [membersRes, invitesRes] = await Promise.all([
+      const [membersRes, invitesRes, orgsRes] = await Promise.all([
         apiFetch(`/api/organizations/members?organizationId=${orgId}`),
-        apiFetch(`/api/organizations/invites?organizationId=${orgId}`)
+        apiFetch(`/api/organizations/invites?organizationId=${orgId}`),
+        apiFetch("/api/organizations")
       ]);
 
       if (membersRes.ok && invitesRes.ok) {
@@ -67,6 +70,12 @@ export default function TeamView({ currentUser }: TeamViewProps) {
         const iData = await invitesRes.json();
         setMembers(mData);
         setInvites(iData);
+
+        if (orgsRes.ok) {
+          const orgs = await orgsRes.json();
+          const activeOrg = orgs.find((o: any) => o.id === orgId);
+          setOrganization(activeOrg || null);
+        }
       } else {
         setError("Erro ao carregar os dados da equipe. Verifique sua conexão.");
       }
@@ -92,6 +101,16 @@ export default function TeamView({ currentUser }: TeamViewProps) {
     setSubmittingInvite(true);
     setError(null);
     setSuccess(null);
+
+    // Limit manager/admin for Max plan
+    const plan = organization?.plan || "beta";
+    const managementCount = members.filter(m => m.status === "active" && ["owner", "admin", "manager"].includes(m.role)).length;
+    
+    if (plan === "max" && ["admin", "manager"].includes(inviteRole) && managementCount >= 1) {
+      setError("O Plano Max permite apenas 1 gestor (administrador/gerente) na equipe. Faça o upgrade para o Plano PRO MAX para ter múltiplos gestores/administradores.");
+      setSubmittingInvite(false);
+      return;
+    }
 
     try {
       const res = await apiFetch("/api/organizations/invites", {
@@ -169,6 +188,16 @@ export default function TeamView({ currentUser }: TeamViewProps) {
     setUpdatingMember(memberId);
     setError(null);
     setSuccess(null);
+
+    // Limit manager/admin for Max plan
+    const plan = organization?.plan || "beta";
+    const managementMembers = members.filter(m => m.status === "active" && ["owner", "admin", "manager"].includes(m.role) && m.id !== memberId);
+    
+    if (plan === "max" && ["owner", "admin", "manager"].includes(newRole) && managementMembers.length >= 1) {
+      setError("O Plano Max permite apenas 1 gestor (administrador/gerente) na equipe. Faça o upgrade para o Plano PRO MAX para ter múltiplos gestores/administradores.");
+      setUpdatingMember(null);
+      return;
+    }
 
     try {
       const member = members.find(m => m.id === memberId);
@@ -272,7 +301,8 @@ export default function TeamView({ currentUser }: TeamViewProps) {
   }
 
   return (
-    <div className="space-y-6 text-left" id="team-view-container">
+    <PlanGuard feature="hasTeamManagement" currentOrganization={organization}>
+      <div className="space-y-6 text-left" id="team-view-container">
       {/* View Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -673,6 +703,7 @@ export default function TeamView({ currentUser }: TeamViewProps) {
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </PlanGuard>
   );
 }

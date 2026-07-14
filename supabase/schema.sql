@@ -1,4 +1,5 @@
 -- Enable UUID generation extension
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ==========================================
@@ -16,11 +17,11 @@ CREATE TABLE IF NOT EXISTS public.organizations (
   "city" text,
   "state" text,
   "owner_id" uuid REFERENCES auth.users(id) ON DELETE SET NULL,
-  "plan" text DEFAULT 'beta' CHECK (plan IN ('beta', 'start', 'pro', 'max')),
+  "plan" text DEFAULT 'beta' CHECK (plan IN ('beta', 'start', 'pro', 'max', 'pro_max')),
   "subscription_status" text DEFAULT 'active' CHECK (subscription_status IN ('active', 'trialing', 'past_due', 'canceled', 'expired')),
-  "subscription_started_at" timestamp with time zone,
+  "subscription_started_at" timestamp with time zone DEFAULT now(),
   "subscription_expires_at" timestamp with time zone,
-  "plan_updated_at" timestamp with time zone,
+  "plan_updated_at" timestamp with time zone DEFAULT now(),
   "max_members" integer DEFAULT 1,
   "billing_email" text,
   "billing_document" text,
@@ -29,13 +30,90 @@ CREATE TABLE IF NOT EXISTS public.organizations (
 );
 
 -- Ensure columns exist if the table was already created
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS "plan" text DEFAULT 'beta';
 ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS "subscription_status" text DEFAULT 'active';
-ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS "subscription_started_at" timestamp with time zone;
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS "subscription_started_at" timestamp with time zone DEFAULT now();
 ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS "subscription_expires_at" timestamp with time zone;
-ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS "plan_updated_at" timestamp with time zone;
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS "plan_updated_at" timestamp with time zone DEFAULT now();
 ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS "max_members" integer DEFAULT 1;
 ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS "billing_email" text;
 ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS "billing_document" text;
+
+-- Remove and recreate plan check constraint to support pro_max
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conname = 'organizations_plan_check'
+  ) then
+    alter table public.organizations
+    drop constraint organizations_plan_check;
+  end if;
+
+  alter table public.organizations
+  add constraint organizations_plan_check
+  check (plan in ('beta', 'start', 'pro', 'max', 'pro_max'));
+end $$;
+
+-- Recreate subscription status check constraint if needed
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conname = 'organizations_subscription_status_check'
+  ) then
+    alter table public.organizations
+    drop constraint organizations_subscription_status_check;
+  end if;
+
+  alter table public.organizations
+  add constraint organizations_subscription_status_check
+  check (subscription_status in ('active', 'trialing', 'past_due', 'canceled', 'expired'));
+end $$;
+
+-- Automatic adjustment of max_members based on plan
+update public.organizations
+set max_members = case
+  when plan = 'max' then 5
+  when plan = 'pro_max' then 30
+  else 1
+end
+where max_members is null
+   or max_members < case
+      when plan = 'max' then 5
+      when plan = 'pro_max' then 30
+      else 1
+   end;
+
+-- Trigger function to automatically maintain max_members on insert or update of plan
+CREATE OR REPLACE FUNCTION public.handle_organization_max_members()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.plan = 'max' THEN
+    NEW.max_members := COALESCE(NEW.max_members, 5);
+    IF NEW.max_members > 5 THEN
+      NEW.max_members := 5;
+    END IF;
+  ELSIF NEW.plan = 'pro_max' THEN
+    NEW.max_members := COALESCE(NEW.max_members, 30);
+    IF NEW.max_members > 30 THEN
+      NEW.max_members := 30;
+    END IF;
+  ELSE
+    NEW.max_members := 1;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger to automatically set/update max_members on insert or update
+DROP TRIGGER IF EXISTS trg_handle_organization_max_members ON public.organizations;
+CREATE TRIGGER trg_handle_organization_max_members
+BEFORE INSERT OR UPDATE OF plan ON public.organizations
+FOR EACH ROW
+EXECUTE FUNCTION public.handle_organization_max_members();
 
 CREATE TABLE IF NOT EXISTS public.organization_members (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1066,15 +1144,42 @@ DECLARE
   v_clients_count integer;
   v_properties_count integer;
   v_members_count integer;
+  v_plan text;
+  v_max_members integer;
+  v_max_clients integer;
+  v_max_properties integer;
 BEGIN
+  -- Validate that the user belongs to the organization
+  IF NOT public.is_org_member(p_org_id) THEN
+    RAISE EXCEPTION 'Not authorized';
+  END IF;
+
   SELECT count(*) INTO v_clients_count FROM public.clients WHERE organization_id = p_org_id;
   SELECT count(*) INTO v_properties_count FROM public.properties WHERE organization_id = p_org_id;
   SELECT count(*) INTO v_members_count FROM public.organization_members WHERE organization_id = p_org_id AND status = 'active';
+  
+  SELECT plan, max_members INTO v_plan, v_max_members FROM public.organizations WHERE id = p_org_id;
+
+  IF v_plan IS NULL THEN
+    v_plan := 'beta';
+  END IF;
+
+  IF v_plan = 'beta' THEN
+    v_max_clients := 10;
+    v_max_properties := 5;
+  ELSE
+    v_max_clients := NULL;
+    v_max_properties := NULL;
+  END IF;
 
   RETURN json_build_object(
-    'active_clients', v_clients_count,
-    'properties', v_properties_count,
-    'members', v_members_count
+    'active_clients_count', v_clients_count,
+    'properties_count', v_properties_count,
+    'active_members_count', v_members_count,
+    'plan', v_plan,
+    'max_members', COALESCE(v_max_members, 1),
+    'max_clients', v_max_clients,
+    'max_properties', v_max_properties
   );
 END;
 $$;
@@ -1088,6 +1193,11 @@ DECLARE
   v_plan text;
   v_clients_count integer;
 BEGIN
+  -- Validate that the user belongs to the organization
+  IF NOT public.is_org_member(p_org_id) THEN
+    RETURN FALSE;
+  END IF;
+
   SELECT plan INTO v_plan FROM public.organizations WHERE id = p_org_id;
   IF v_plan = 'beta' THEN
     SELECT count(*) INTO v_clients_count FROM public.clients WHERE organization_id = p_org_id;
@@ -1108,6 +1218,11 @@ DECLARE
   v_plan text;
   v_properties_count integer;
 BEGIN
+  -- Validate that the user belongs to the organization
+  IF NOT public.is_org_member(p_org_id) THEN
+    RETURN FALSE;
+  END IF;
+
   SELECT plan INTO v_plan FROM public.organizations WHERE id = p_org_id;
   IF v_plan = 'beta' THEN
     SELECT count(*) INTO v_properties_count FROM public.properties WHERE organization_id = p_org_id;
@@ -1128,16 +1243,78 @@ DECLARE
   v_plan text;
   v_members_count integer;
 BEGIN
-  SELECT plan INTO v_plan FROM public.organizations WHERE id = p_org_id;
-  IF v_plan <> 'max' THEN
+  -- Validate that the user belongs to the organization
+  IF NOT public.is_org_member(p_org_id) THEN
     RETURN FALSE;
-  ELSE
+  END IF;
+
+  SELECT plan INTO v_plan FROM public.organizations WHERE id = p_org_id;
+  IF v_plan = 'max' THEN
     SELECT count(*) INTO v_members_count FROM public.organization_members WHERE organization_id = p_org_id AND status = 'active';
     IF v_members_count >= 5 THEN
       RETURN FALSE;
     END IF;
+  ELSIF v_plan = 'pro_max' THEN
+    SELECT count(*) INTO v_members_count FROM public.organization_members WHERE organization_id = p_org_id AND status = 'active';
+    IF v_members_count >= 30 THEN
+      RETURN FALSE;
+    END IF;
+  ELSE
+    -- beta, start, pro are single user (limit = 1, cannot invite others)
+    RETURN FALSE;
   END IF;
   RETURN TRUE;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.can_use_feature(p_org_id uuid, p_feature text)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_plan text;
+BEGIN
+  -- Validate that the user belongs to the organization
+  IF NOT public.is_org_member(p_org_id) THEN
+    RETURN FALSE;
+  END IF;
+
+  SELECT plan INTO v_plan FROM public.organizations WHERE id = p_org_id;
+  IF v_plan IS NULL THEN
+    v_plan := 'beta';
+  END IF;
+
+  CASE p_feature
+    WHEN 'gemini_ai', 'hasGeminiAI', 'has_gemini_ai' THEN
+      RETURN v_plan IN ('pro', 'max', 'pro_max');
+    WHEN 'property_matching', 'hasPropertyMatching', 'has_property_matching' THEN
+      RETURN v_plan IN ('pro', 'max', 'pro_max');
+    WHEN 'commission_reports', 'hasCommissionReports', 'has_commission_reports' THEN
+      RETURN v_plan IN ('pro', 'max', 'pro_max');
+    WHEN 'advanced_reports', 'hasAdvancedReports', 'has_advanced_reports' THEN
+      RETURN v_plan = 'pro_max';
+    WHEN 'team_management', 'hasTeamManagement', 'has_team_management' THEN
+      RETURN v_plan IN ('max', 'pro_max');
+    WHEN 'lead_distribution', 'hasLeadDistribution', 'has_lead_distribution' THEN
+      RETURN v_plan IN ('max', 'pro_max');
+    WHEN 'manager_dashboard', 'hasManagerDashboard', 'has_manager_dashboard' THEN
+      RETURN v_plan IN ('max', 'pro_max');
+    WHEN 'advanced_manager_dashboard', 'hasAdvancedManagerDashboard', 'has_advanced_manager_dashboard' THEN
+      RETURN v_plan = 'pro_max';
+    WHEN 'lead_transfer', 'hasLeadTransfer', 'has_lead_transfer' THEN
+      RETURN v_plan IN ('max', 'pro_max');
+    WHEN 'multiple_managers', 'hasMultipleManagers', 'has_multiple_managers' THEN
+      RETURN v_plan = 'pro_max';
+    WHEN 'full_pipeline', 'hasFullPipeline', 'has_full_pipeline' THEN
+      RETURN v_plan IN ('start', 'pro', 'max', 'pro_max');
+    WHEN 'whatsapp_templates', 'hasWhatsappTemplates', 'has_whatsapp_templates' THEN
+      RETURN v_plan IN ('start', 'pro', 'max', 'pro_max');
+    WHEN 'calendar_tasks', 'hasCalendarTasks', 'has_calendar_tasks' THEN
+      RETURN TRUE; -- all plans have calendar tasks
+    ELSE
+      RETURN FALSE;
+  END CASE;
 END;
 $$;
 
@@ -1171,6 +1348,7 @@ GRANT EXECUTE ON FUNCTION public.get_organization_usage(uuid) TO authenticated, 
 GRANT EXECUTE ON FUNCTION public.can_create_client(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.can_create_property(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.can_invite_member(uuid) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.can_use_feature(uuid, text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.get_user_plan_access(uuid) TO authenticated, service_role;
 
 -- Reload PGRST Schema

@@ -684,7 +684,7 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
           if (!countErr && count !== null && count >= 10) {
             return {
               allowed: false,
-              error: "Limite de 10 leads/clientes ativos atingido para o plano Beta. Faça o upgrade do seu plano nas Configurações para cadastrar mais clientes."
+              error: "Seu Plano Beta permite até 10 leads ativos. Para cadastrar mais leads, escolha o Plano Start."
             };
           }
         }
@@ -698,26 +698,40 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
           if (!countErr && count !== null && count >= 5) {
             return {
               allowed: false,
-              error: "Limite de 5 imóveis atingido para o plano Beta. Faça o upgrade do seu plano nas Configurações para cadastrar mais imóveis."
+              error: "Seu Plano Beta permite até 5 imóveis cadastrados. Para cadastrar mais imóveis, escolha o Plano Start."
             };
           }
         }
       } else if (resource === "members") {
-        if (plan !== "max") {
+        if (plan === "beta" || plan === "start" || plan === "pro") {
           return {
             allowed: false,
-            error: "Seu plano de assinatura atual não permite ter equipe ou convidar outros corretores. Faça o upgrade para o Plano Max para gerenciar equipe."
+            error: "Gestão de equipe está disponível apenas nos planos Max e PRO MAX."
           };
-        } else {
+        } else if (plan === "max") {
           const { count, error: countErr } = await supabase
             .from("organization_members")
             .select("*", { count: "exact", head: true })
-            .eq("organization_id", orgId);
+            .eq("organization_id", orgId)
+            .eq("status", "active");
 
           if (!countErr && count !== null && count >= 5) {
             return {
               allowed: false,
-              error: "Limite de 5 corretores na equipe atingido para o Plano Max."
+              error: "O Plano Max permite até 5 corretores integrados."
+            };
+          }
+        } else if (plan === "pro_max") {
+          const { count, error: countErr } = await supabase
+            .from("organization_members")
+            .select("*", { count: "exact", head: true })
+            .eq("organization_id", orgId)
+            .eq("status", "active");
+
+          if (!countErr && count !== null && count >= 30) {
+            return {
+              allowed: false,
+              error: "O Plano PRO MAX permite até 30 corretores integrados."
             };
           }
         }
@@ -731,7 +745,7 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
       const session = await getActiveUserSession();
       if (!session?.user) return mockResponse({ error: "Não autorizado" }, 401);
 
-      // Validate plan can use AI (Pro and Max only)
+      // Validate plan can use AI (Pro, Max, and PRO MAX only)
       const { data: profile } = await supabase
         .from("profiles")
         .select("default_organization_id")
@@ -749,7 +763,7 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
         const plan = org?.plan || "beta";
         if (plan === "beta" || plan === "start") {
           return mockResponse({
-            error: "Funcionalidade bloqueada. O uso da Inteligência Artificial (Gemini AI) está disponível apenas nos planos Pro e Max. Faça o upgrade nas Configurações!"
+            error: "Funcionalidade bloqueada. O uso da Inteligência Artificial (Gemini AI) está disponível apenas nos planos Pro, Max e PRO MAX. Faça o upgrade nas Configurações!"
           }, 403);
         }
       }
@@ -972,7 +986,7 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
       const orgId = parts[3];
       const { plan } = body;
 
-      if (!["beta", "start", "pro", "max"].includes(plan)) {
+      if (!["beta", "start", "pro", "max", "pro_max"].includes(plan)) {
         return mockResponse({ error: "Plano inválido" }, 400);
       }
 
@@ -1200,8 +1214,26 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
       if (!session?.user) return mockResponse({ error: "Não autorizado" }, 401);
 
       const { clientIds, targetBrokerId, organizationId } = body;
-      if (!clientIds || !Array.isArray(clientIds) || !targetBrokerId) {
+      if (!clientIds || !Array.isArray(clientIds) || !targetBrokerId || !organizationId) {
         return mockResponse({ error: "Parâmetros inválidos para transferência" }, 400);
+      }
+
+      // Validate plan is Max or PRO MAX
+      const { data: org } = await supabase
+        .from("organizations")
+        .select("plan")
+        .eq("id", organizationId)
+        .maybeSingle();
+      
+      const plan = org?.plan || "beta";
+      if (plan !== "max" && plan !== "pro_max") {
+        return mockResponse({ error: "Transferência de leads está disponível apenas nos planos Max e PRO MAX." }, 403);
+      }
+
+      // Validate user role is owner, admin, or manager
+      const role = await getOrgMemberRole(organizationId, session.user.id);
+      if (!role || (role !== "owner" && role !== "admin" && role !== "manager")) {
+        return mockResponse({ error: "Apenas proprietários, administradores ou gestores podem transferir leads." }, 403);
       }
 
       const { data: brokerMember } = await supabase

@@ -41,7 +41,7 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
 
   // Form states
   const [accountType, setAccountType] = useState<AccountType>("broker");
-  const [plan, setPlan] = useState<"beta" | "start" | "pro" | "max">("beta");
+  const [plan, setPlan] = useState<"beta" | "start" | "pro" | "max" | "pro_max">("beta");
   const [name, setName] = useState(user.name || "");
   const [commercialName, setCommercialName] = useState("");
   const [creci, setCreci] = useState("");
@@ -377,6 +377,35 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
                       </div>
                       <p className="text-[11px] text-on-surface-variant mt-1 leading-relaxed">
                         Tudo do Pro + Gestão de Equipe (até 5 corretores), painel do gestor, relatórios por corretor e distribuição inteligente de leads.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Option 5: PRO MAX */}
+                  <div
+                    onClick={() => {
+                      setPlan("pro_max");
+                      setAccountType("agency");
+                    }}
+                    className={`p-4 rounded-2xl border cursor-pointer transition-all flex items-start gap-3.5 ${
+                      plan === "pro_max"
+                        ? "border-amber-400 bg-amber-400/5 shadow-md shadow-amber-400/5"
+                        : "border-outline-variant hover:border-amber-400/50 bg-surface-container-low"
+                    }`}
+                  >
+                    <div className={`p-2 rounded-xl ${plan === "pro_max" ? "bg-amber-400 text-slate-900" : "bg-surface-container-high text-amber-500"} shrink-0`}>
+                      <BadgeCheck className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 text-left">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <h4 className="font-bold text-xs text-amber-500">Tenho uma imobiliária/rede — Plano PRO MAX</h4>
+                          <span className="text-[8px] font-bold text-white bg-amber-500 px-1.5 py-0.2 rounded uppercase tracking-wider shrink-0">Elite</span>
+                        </div>
+                        <span className="text-[10px] font-bold text-amber-500 bg-amber-400/5 px-2 py-0.5 rounded-full border border-amber-400/10 shrink-0">R$ 999,00/mês</span>
+                      </div>
+                      <p className="text-[11px] text-on-surface-variant mt-1 leading-relaxed">
+                        Tudo do Max + Gestão de Equipe Expandida (até 30 corretores), múltiplos gestores/admins, relatórios avançados de BI e painel gestor premium.
                       </p>
                     </div>
                   </div>

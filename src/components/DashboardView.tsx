@@ -82,7 +82,7 @@ export default function DashboardView({
   const [suggestedAiTasks, setSuggestedAiTasks] = useState<Task[]>([]);
   const [aiTasksAdded, setAiTasksAdded] = useState<Record<number, boolean>>({});
 
-  const [currentPlan, setCurrentPlan] = useState<"beta" | "start" | "pro" | "max">("beta");
+  const [currentPlan, setCurrentPlan] = useState<"beta" | "start" | "pro" | "max" | "pro_max">("beta");
   const [orgName, setOrgName] = useState<string>("");
 
   useEffect(() => {

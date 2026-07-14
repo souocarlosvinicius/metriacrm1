@@ -132,7 +132,7 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Subscription Plan States
-  const [orgPlan, setOrgPlan] = useState<"beta" | "start" | "pro" | "max">("beta");
+  const [orgPlan, setOrgPlan] = useState<"beta" | "start" | "pro" | "max" | "pro_max">("beta");
   const [orgName, setOrgName] = useState<string>("");
   const [usageStats, setUsageStats] = useState<{ clients: number; properties: number; members: number }>({ clients: 0, properties: 0, members: 0 });
   const [isPlanLoading, setIsPlanLoading] = useState(false);
@@ -193,7 +193,7 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
     }
   };
 
-  const handleSelectPlan = async (targetPlan: "beta" | "start" | "pro" | "max") => {
+  const handleSelectPlan = async (targetPlan: "beta" | "start" | "pro" | "max" | "pro_max") => {
     const orgId = currentUser.defaultOrganizationId;
     if (!orgId) {
       setPlanErrorMsg("Você precisa de uma organização ativa para alterar o plano.");
@@ -233,6 +233,13 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
       }
     }
 
+    if (targetPlan === "pro_max") {
+      if (usageStats.members > 30) {
+        setPlanErrorMsg(`Não é possível alterar para o plano PRO MAX pois sua organização possui ${usageStats.members} corretores (limite do PRO MAX: 30). Remova pelo menos ${usageStats.members - 30} corretores antes de prosseguir.`);
+        return;
+      }
+    }
+
     setIsPlanLoading(true);
     try {
       const res = await apiFetch(`/api/organizations/${orgId}/plan`, {
@@ -246,7 +253,7 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
         throw new Error(data.error || "Erro ao atualizar plano.");
       }
 
-      setPlanSuccessMsg(`Plano alterado com sucesso para ${targetPlan === "beta" ? "Plano Beta" : targetPlan === "start" ? "Plano Start" : targetPlan === "pro" ? "Plano Pro" : "Plano Max"}! Os limites foram recalculados.`);
+      setPlanSuccessMsg(`Plano alterado com sucesso para ${targetPlan === "beta" ? "Plano Beta" : targetPlan === "start" ? "Plano Start" : targetPlan === "pro" ? "Plano Pro" : targetPlan === "max" ? "Plano Max" : "Plano PRO MAX"}! Os limites foram recalculados.`);
       
       // Update local state
       setOrgPlan(targetPlan);
@@ -1146,14 +1153,14 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
                         <div className="flex justify-between text-xs">
                           <span className="font-bold text-on-surface-variant">Corretores / Equipe</span>
                           <span className="font-bold text-primary">
-                            {usageStats.members} / {orgPlan === "max" ? 5 : 1}
+                            {usageStats.members} / {orgPlan === "pro_max" ? 30 : orgPlan === "max" ? 5 : 1}
                           </span>
                         </div>
-                        {orgPlan === "max" ? (
+                        {orgPlan === "max" || orgPlan === "pro_max" ? (
                           <div className="h-2 w-full bg-surface-container-high rounded-full overflow-hidden">
                             <div 
-                              className={`h-full rounded-full transition-all ${usageStats.members >= 5 ? "bg-error" : "bg-primary"}`}
-                              style={{ width: `${Math.min(100, (usageStats.members / 5) * 100)}%` }}
+                              className={`h-full rounded-full transition-all ${usageStats.members >= (orgPlan === "pro_max" ? 30 : 5) ? "bg-error" : "bg-primary"}`}
+                              style={{ width: `${Math.min(100, (usageStats.members / (orgPlan === "pro_max" ? 30 : 5)) * 100)}%` }}
                             />
                           </div>
                         ) : (
@@ -1162,7 +1169,7 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
                           </div>
                         )}
                         <span className="text-[10px] text-on-surface-variant block leading-tight font-medium">
-                          {orgPlan === "max" ? "Limite de até 5 corretores na equipe." : "Usuário único. Upgrade para Max para gerenciar equipe."}
+                          {orgPlan === "pro_max" ? "Limite de até 30 corretores na equipe." : orgPlan === "max" ? "Limite de até 5 corretores na equipe." : "Usuário único. Upgrade para Max ou PRO MAX para gerenciar equipe."}
                         </span>
                       </div>
                     </div>
@@ -1313,6 +1320,44 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
                       }`}
                     >
                       {orgPlan === "max" ? "Plano Ativo" : "Ativar Plano"}
+                    </button>
+                  </div>
+
+                  {/* Plan 5: PRO MAX */}
+                  <div className={`bg-slate-900 text-white border-2 rounded-2xl p-4.5 flex flex-col justify-between transition-all relative ${orgPlan === "pro_max" ? "border-amber-400 ring-2 ring-amber-400/20" : "border-slate-800 hover:border-amber-400/50"}`}>
+                    <div className="absolute top-0 right-0 bg-amber-400 text-slate-950 text-[8px] font-bold px-2 py-0.5 rounded-bl-lg uppercase tracking-wider">
+                      Empresarial Elite
+                    </div>
+                    <div className="space-y-3.5 flex flex-col h-full justify-between">
+                      <div className="space-y-1">
+                        <span className="text-[8px] bg-amber-400/20 text-amber-400 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">PRO MAX</span>
+                        <h5 className="font-display text-sm font-bold text-white">Plano PRO MAX</h5>
+                        <p className="text-[10px] text-slate-400 leading-relaxed">Estrutura completa corporativa para grandes imobiliárias e redes.</p>
+                      </div>
+                      <div>
+                        <span className="text-xl font-extrabold text-amber-400 font-sans">R$ 999,00</span>
+                        <span className="text-[10px] text-slate-400 font-medium"> /mês</span>
+                      </div>
+                      <div className="border-t border-slate-800 pt-3.5 space-y-1.5 text-[11px] text-slate-300">
+                        <div className="flex items-center gap-1.5 font-bold text-amber-400"><Check className="w-3.5 h-3.5 text-amber-400 shrink-0" /> Até 30 Corretores inclusos</div>
+                        <div className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-amber-400 shrink-0" /> Múltiplos Gestores / Admins</div>
+                        <div className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> Painel de Gestão Avançado</div>
+                        <div className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> Relatórios Avançados & BI</div>
+                        <div className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> IA Gemini e Distribuição</div>
+                      </div>
+                    </div>
+                    
+                    <button
+                      type="button"
+                      disabled={isPlanLoading}
+                      onClick={() => handleSelectPlan("pro_max")}
+                      className={`w-full mt-5 py-2 text-xs font-bold rounded-xl transition-all ${
+                        orgPlan === "pro_max" 
+                          ? "bg-emerald-500 text-white cursor-default" 
+                          : "bg-amber-400 hover:bg-amber-500 text-slate-950 cursor-pointer"
+                      }`}
+                    >
+                      {orgPlan === "pro_max" ? "Plano Ativo" : "Ativar Plano"}
                     </button>
                   </div>
                 </div>

@@ -215,7 +215,7 @@ export interface User {
 export type UserRole = "owner" | "admin" | "manager" | "broker";
 export type AccountType = "broker" | "agency";
 
-export type PlanId = "beta" | "start" | "pro" | "max";
+export type PlanId = "beta" | "start" | "pro" | "max" | "pro_max";
 
 export type SubscriptionStatus =
   | "active"
@@ -225,7 +225,9 @@ export type SubscriptionStatus =
   | "expired";
 
 export interface PlanLimits {
+  id: PlanId;
   name: string;
+  displayName: string;
   price: number;
   maxActiveClients: number | null;
   maxProperties: number | null;
@@ -236,77 +238,16 @@ export interface PlanLimits {
   hasGeminiAI: boolean;
   hasPropertyMatching: boolean;
   hasCommissionReports: boolean;
+  hasAdvancedReports: boolean;
   hasTeamManagement: boolean;
   hasLeadDistribution: boolean;
   hasManagerDashboard: boolean;
+  hasAdvancedManagerDashboard: boolean;
+  hasLeadTransfer: boolean;
+  hasMultipleManagers: boolean;
 }
 
-export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
-  beta: {
-    name: "Plano Beta",
-    price: 0,
-    maxActiveClients: 10,
-    maxProperties: 5,
-    maxMembers: 1,
-    hasFullPipeline: false,
-    hasWhatsappTemplates: false,
-    hasCalendarTasks: true,
-    hasGeminiAI: false,
-    hasPropertyMatching: false,
-    hasCommissionReports: false,
-    hasTeamManagement: false,
-    hasLeadDistribution: false,
-    hasManagerDashboard: false
-  },
-  start: {
-    name: "Plano Start",
-    price: 39.90,
-    maxActiveClients: null,
-    maxProperties: null,
-    maxMembers: 1,
-    hasFullPipeline: true,
-    hasWhatsappTemplates: true,
-    hasCalendarTasks: true,
-    hasGeminiAI: false,
-    hasPropertyMatching: false,
-    hasCommissionReports: false,
-    hasTeamManagement: false,
-    hasLeadDistribution: false,
-    hasManagerDashboard: false
-  },
-  pro: {
-    name: "Plano Pro",
-    price: 79.90,
-    maxActiveClients: null,
-    maxProperties: null,
-    maxMembers: 1,
-    hasFullPipeline: true,
-    hasWhatsappTemplates: true,
-    hasCalendarTasks: true,
-    hasGeminiAI: true,
-    hasPropertyMatching: true,
-    hasCommissionReports: true,
-    hasTeamManagement: false,
-    hasLeadDistribution: false,
-    hasManagerDashboard: false
-  },
-  max: {
-    name: "Plano Max",
-    price: 149.90,
-    maxActiveClients: null,
-    maxProperties: null,
-    maxMembers: 5,
-    hasFullPipeline: true,
-    hasWhatsappTemplates: true,
-    hasCalendarTasks: true,
-    hasGeminiAI: true,
-    hasPropertyMatching: true,
-    hasCommissionReports: true,
-    hasTeamManagement: true,
-    hasLeadDistribution: true,
-    hasManagerDashboard: true
-  }
-};
+export { PLAN_LIMITS } from "./config/plans";
 
 export interface Organization {
   id: string;
@@ -320,15 +261,15 @@ export interface Organization {
   state?: string;
   ownerId: string;
   plan: PlanId;
-  subscriptionStatus?: SubscriptionStatus;
+  subscriptionStatus: SubscriptionStatus;
   subscriptionStartedAt?: string;
   subscriptionExpiresAt?: string;
   planUpdatedAt?: string;
-  maxMembers?: number;
+  maxMembers: number;
   billingEmail?: string;
   billingDocument?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface OrganizationMember {

@@ -1,217 +1,3 @@
-export interface Property {
-  id?: string;
-  _id?: string;
-  userId?: string; // Partitioning key
-  organizationId?: string; // Organization reference
-  assignedTo?: string; // Assigned broker/user ID
-  createdBy?: string; // Creator user ID
-  code?: string; // Unique random code (e.g. IM-XXXX)
-  ownerId?: string; // Reference to owner (Client)
-  title: string;
-  type: string; // 'Apartamento' | 'Casa' | 'Sobrado' | 'Terreno' | 'Comercial'
-  condition: string; // 'Novo' | 'Usado'
-  description: string;
-  modality: string; // 'Venda' | 'Aluguel' | 'Ambos'
-  price: number;
-  condo: number;
-  iptu: number;
-  address: string;
-  neighborhood: string;
-  city: string;
-  bedrooms: number;
-  suites: number;
-  bathrooms: number;
-  parkingSpots: number;
-  area: number;
-  builtArea?: number;
-  constructionYear?: number;
-  floor?: string;
-  sunPosition?: string;
-  documentStatus?: string;
-  financialStatus?: string; // 'quitado' | 'em financiamento' | 'não definida'
-  acceptsExchange?: boolean;
-  photos: string[];
-  videoLink?: string; // YouTube or social media post link
-  amenities: string[];
-  status: string; // 'Disponível' | 'Reservado' | 'Em Negociação' | 'Vendido' | 'Alugado' | 'Inativo'
-  captadorName?: string;
-  captadorPhone?: string;
-  estimatedCommission?: number; // Estimated commission in absolute BRL
-  commissionPercent?: number; // Estimated commission percentage (%)
-  createdAt?: string;
-}
-
-export interface HistoryEntry {
-  id?: string;
-  userId?: string;
-  organizationId?: string;
-  clientId?: string;
-  type: string; // 'creation' | 'status_change' | 'pipeline_change' | 'whatsapp' | 'task_created' | 'task_completed' | 'visit_scheduled' | 'proposal_sent' | 'observation' | 'loss' | 'transfer'
-  date: string; // YYYY-MM-DD HH:mm:ss or similar ISO string
-  description: string;
-  userName?: string;
-}
-
-export interface Client {
-  id?: string;
-  _id?: string;
-  userId?: string; // Partitioning key
-  organizationId?: string; // Organization reference
-  assignedTo?: string; // Assigned broker/user ID
-  createdBy?: string; // Creator user ID
-  clientType?: "PF" | "PJ"; // PF = Pessoa Física, PJ = Pessoa Jurídica
-  name: string;
-  phone: string;
-  document: string;
-  email: string;
-  profileType: string; // 'Lead' | 'Comprador' | 'Vendedor' | 'Locador' | 'Locatário' | 'Investidor'
-  objective: string; // Legacy objective
-  leadSource?: string; // 'Indicação' | 'Instagram' | 'Facebook' | 'OLX' | 'Portal Imobiliário' | 'Placa' | 'WhatsApp' | 'Tráfego Pago' | 'Outro'
-  interest?: string; // 'Compra' | 'Venda' | 'Locação' | 'Avaliação' | 'Investimento'
-  budgetRange?: string; // Faixa de orçamento (e.g. "R$ 300.000 - R$ 500.000")
-  neighborhoodOfInterest?: string; // Bairro de interesse
-  desiredPropertyType?: string; // Tipo de imóvel desejado (e.g. "Apartamento 3 quartos")
-  status: string; // Status de atendimento: 'Novo' | 'Em Atendimento' | 'Proposta' | 'Contrato' | 'Ganho' | 'Perdido'
-  temperature?: "Frio" | "Morno" | "Quente"; // Temperature of lead
-  nextAction?: string; // Próxima ação a ser realizada
-  nextFollowUpDate?: string; // Data do próximo follow-up (YYYY-MM-DD)
-  propertyType: string;
-  minBudget: number;
-  maxBudget: number;
-  observations: string;
-  birthday?: string; // YYYY-MM-DD
-  address?: string; // Client address
-  pipelineStatus?: string; // Funnel stage
-  linkedPropertyId?: string; // Reference key or Supabase ID of Property
-  createdAt?: string;
-  updatedAt?: string; // Track when client stage/status was last modified
-  lossReason?: string; // Motivo de perda
-  commissionForecast?: number; // Previsão de comissão (BRL)
-  commissionPercent?: number; // Porcentagem de comissão (%)
-  potentialValue?: number; // Valor potencial do negócio (BRL)
-  closingProbability?: "Baixa" | "Média" | "Alta"; // Probabilidade de fechamento
-  history?: HistoryEntry[];
-}
-
-export interface Proposal {
-  id?: string;
-  _id?: string;
-  userId?: string;
-  organizationId?: string;
-  assignedTo?: string;
-  createdBy?: string;
-  clientId: string;
-  clientName: string;
-  propertyId: string;
-  propertyTitle: string;
-  proposedValue: number;
-  status: "Pendente" | "Aceita" | "Recusada" | "Em Análise";
-  date: string; // YYYY-MM-DD
-  observations: string;
-  nextAction?: string;
-  createdAt?: string;
-}
-
-export interface Visit {
-  id?: string;
-  _id?: string;
-  userId?: string;
-  organizationId?: string;
-  assignedTo?: string;
-  createdBy?: string;
-  clientId: string;
-  clientName: string;
-  propertyId: string;
-  propertyTitle: string;
-  date: string; // YYYY-MM-DD
-  time: string; // HH:MM
-  status: "Agendada" | "Realizada" | "Cancelada";
-  observations: string;
-  feedback?: string;
-  createdAt?: string;
-}
-
-export interface Task {
-  id?: string;
-  _id?: string;
-  userId?: string; // Partitioning key
-  organizationId?: string;
-  assignedTo?: string;
-  createdBy?: string;
-  date: string; // YYYY-MM-DD
-  time: string; // HH:MM
-  title: string;
-  clientId?: string; // Linked client (required for new tasks, optional for legacy)
-  clientName: string;
-  propertyId?: string; // Linked property, optional
-  propertyTitle?: string;
-  type: string; // 'Ligar' | 'Enviar WhatsApp' | 'Enviar imóvel' | 'Confirmar visita' | 'Enviar proposta' | 'Cobrar retorno' | 'Documentação' | 'Outro'
-  priority?: "baixa" | "média" | "alta"; // Priority
-  completed: boolean;
-  description: string;
-  createdAt?: string;
-  reminderActive?: boolean; // Whether automatic WhatsApp reminder is scheduled
-  reminderMessage?: string; // Pre-formatted WhatsApp reminder text
-  reminderSent?: boolean; // Whether the broker has sent the WhatsApp reminder
-  reminderDate?: string; // When the reminder should be sent
-}
-
-export interface Transaction {
-  id?: string;
-  _id?: string;
-  userId?: string;
-  organizationId?: string;
-  assignedTo?: string;
-  createdBy?: string;
-  title: string;
-  amount: number;
-  status: string;
-  createdAt?: string;
-}
-
-export interface DBStatus {
-  dbType: string;
-  supabaseActive: boolean;
-  geminiActive: boolean;
-  schemaMissing?: boolean;
-}
-
-export interface MessageTemplates {
-  primeiroContato?: string;
-  followUp?: string;
-  confirmacaoVisita?: string;
-  posVisita?: string;
-  proposta?: string;
-}
-
-export interface User {
-  id?: string;
-  _id?: string;
-  username: string;
-  name: string;
-  email: string;
-  avatarUrl: string;
-  role?: string;
-  phone?: string;
-  onboardingCompleted?: boolean;
-  commercialName?: string;
-  creci?: string;
-  primaryCity?: string;
-  actingType?: "Venda" | "Locação" | "Lançamentos" | "Usados" | "Alto padrão" | "Minha Casa Minha Vida" | "Geral";
-  defaultCommissionPercent?: number; // Default commission percentage for properties and clients
-  pipelineStages?: string[]; // Custom pipeline stages
-  leadSources?: string[]; // Custom lead sources
-  messageTemplates?: MessageTemplates; // Custom message templates
-  isDemo?: boolean; // Demo mode flag
-  sessionToken?: string; // Session token
-  defaultOrganizationId?: string;
-  accountType?: AccountType;
-  currentRole?: UserRole;
-}
-
-export type UserRole = "owner" | "admin" | "manager" | "broker";
-export type AccountType = "broker" | "agency";
-
 export type PlanId = "beta" | "start" | "pro" | "max" | "pro_max";
 
 export type SubscriptionStatus =
@@ -220,6 +6,73 @@ export type SubscriptionStatus =
   | "past_due"
   | "canceled"
   | "expired";
+
+export type UserRole = "owner" | "admin" | "manager" | "broker";
+
+export type AccountType = "broker" | "agency" | "team";
+
+export type ClientStatus =
+  | "active"
+  | "new"
+  | "contacted"
+  | "qualified"
+  | "negotiation"
+  | "proposal"
+  | "closed"
+  | "lost"
+  | "inactive"
+  | string;
+
+export type ClientTemperature = "cold" | "warm" | "hot" | string;
+
+export type PropertyStatus =
+  | "available"
+  | "reserved"
+  | "sold"
+  | "rented"
+  | "inactive"
+  | string;
+
+export type TaskStatus = "pending" | "completed" | "cancelled" | string;
+
+export type TaskPriority = "low" | "medium" | "high" | string;
+
+export type VisitStatus =
+  | "scheduled"
+  | "completed"
+  | "cancelled"
+  | "rescheduled"
+  | string;
+
+export type ProposalStatus =
+  | "draft"
+  | "sent"
+  | "accepted"
+  | "rejected"
+  | "cancelled"
+  | string;
+
+export type TransactionStatus =
+  | "open"
+  | "in_progress"
+  | "completed"
+  | "cancelled"
+  | string;
+
+export type PlanFeature =
+  | "full_pipeline"
+  | "whatsapp_templates"
+  | "calendar_tasks"
+  | "gemini_ai"
+  | "property_matching"
+  | "commission_reports"
+  | "advanced_reports"
+  | "team_management"
+  | "lead_distribution"
+  | "manager_dashboard"
+  | "advanced_manager_dashboard"
+  | "lead_transfer"
+  | "multiple_managers";
 
 export interface PlanLimits {
   id: PlanId;
@@ -244,10 +97,9 @@ export interface PlanLimits {
   hasMultipleManagers: boolean;
 }
 
-export { PLAN_LIMITS } from "./config/plans";
-
 export interface Organization {
   id: string;
+  _id?: string;
   name: string;
   tradeName?: string;
   document?: string;
@@ -256,21 +108,22 @@ export interface Organization {
   email?: string;
   city?: string;
   state?: string;
-  ownerId: string;
+  ownerId?: string;
   plan: PlanId;
-  subscriptionStatus: SubscriptionStatus;
+  subscriptionStatus?: SubscriptionStatus;
   subscriptionStartedAt?: string;
-  subscriptionExpiresAt?: string;
+  subscriptionExpiresAt?: string | null;
   planUpdatedAt?: string;
   maxMembers: number;
   billingEmail?: string;
   billingDocument?: string;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface OrganizationMember {
   id: string;
+  _id?: string;
   organizationId: string;
   userId: string;
   name?: string;
@@ -278,22 +131,259 @@ export interface OrganizationMember {
   phone?: string;
   creci?: string;
   role: UserRole;
-  status: "active" | "inactive";
+  status: "active" | "inactive" | string;
   createdAt?: string;
   updatedAt?: string;
 }
 
 export interface OrganizationInvite {
   id: string;
+  _id?: string;
   organizationId: string;
   invitedEmail: string;
   invitedName?: string;
   role: UserRole;
-  token: string;
-  status: "pending" | "accepted" | "expired";
+  token?: string;
+  status: "pending" | "accepted" | "expired" | "cancelled" | string;
   invitedBy?: string;
   acceptedBy?: string;
-  expiresAt?: string;
+  expiresAt?: string | null;
   createdAt?: string;
-  acceptedAt?: string;
+  acceptedAt?: string | null;
+}
+
+export interface User {
+  id: string;
+  _id?: string;
+  name?: string;
+  email: string;
+  avatarUrl?: string;
+  role?: string;
+  phone?: string;
+  whatsapp?: string;
+  creci?: string;
+  commercialName?: string;
+  primaryCity?: string;
+  actingType?: string;
+  onboardingCompleted?: boolean;
+  defaultOrganizationId?: string;
+  currentOrganizationId?: string;
+  organizationId?: string;
+  accountType?: AccountType | string;
+  currentRole?: UserRole | string;
+  plan?: PlanId;
+  isDemo?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Client {
+  id: string;
+  _id?: string;
+  userId?: string;
+  organizationId?: string;
+  assignedTo?: string;
+  createdBy?: string;
+  name: string;
+  phone?: string;
+  whatsapp?: string;
+  email?: string;
+  document?: string;
+  clientType?: string;
+  profileType?: string;
+  objective?: string;
+  propertyType?: string;
+  minBudget?: number | null;
+  maxBudget?: number | null;
+  observations?: string;
+  birthday?: string | null;
+  address?: string;
+  status?: ClientStatus;
+  temperature?: ClientTemperature;
+  source?: string;
+  nextAction?: string;
+  nextFollowUp?: string | null;
+  tags?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Property {
+  id: string;
+  _id?: string;
+  userId?: string;
+  organizationId?: string;
+  assignedTo?: string;
+  createdBy?: string;
+  title: string;
+  type?: string;
+  modality?: string;
+  price?: number | null;
+  neighborhood?: string;
+  city?: string;
+  state?: string;
+  address?: string;
+  bedrooms?: number | null;
+  suites?: number | null;
+  bathrooms?: number | null;
+  parkingSpots?: number | null;
+  area?: number | null;
+  photos?: string[];
+  status?: PropertyStatus;
+  ownerId?: string | null;
+  ownerName?: string;
+  commissionPercent?: number | null;
+  estimatedCommission?: number | null;
+  description?: string;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Task {
+  id: string;
+  _id?: string;
+  userId?: string;
+  organizationId?: string;
+  assignedTo?: string;
+  createdBy?: string;
+  clientId?: string | null;
+  clientName?: string | null;
+  propertyId?: string | null;
+  propertyTitle?: string | null;
+  title: string;
+  description?: string;
+  dueDate?: string | null;
+  status?: TaskStatus;
+  priority?: TaskPriority;
+  type?: string;
+  completedAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Visit {
+  id: string;
+  _id?: string;
+  userId?: string;
+  organizationId?: string;
+  assignedTo?: string;
+  createdBy?: string;
+  clientId?: string | null;
+  clientName?: string | null;
+  propertyId?: string | null;
+  propertyTitle?: string | null;
+  date?: string | null;
+  time?: string | null;
+  scheduledAt?: string | null;
+  status?: VisitStatus;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Proposal {
+  id: string;
+  _id?: string;
+  userId?: string;
+  organizationId?: string;
+  assignedTo?: string;
+  createdBy?: string;
+  clientId?: string | null;
+  clientName?: string | null;
+  propertyId?: string | null;
+  propertyTitle?: string | null;
+  value?: number | null;
+  commissionValue?: number | null;
+  commissionPercent?: number | null;
+  status?: ProposalStatus;
+  notes?: string;
+  sentAt?: string | null;
+  acceptedAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Transaction {
+  id: string;
+  _id?: string;
+  userId?: string;
+  organizationId?: string;
+  assignedTo?: string;
+  createdBy?: string;
+  clientId?: string | null;
+  propertyId?: string | null;
+  proposalId?: string | null;
+  title?: string;
+  value?: number | null;
+  commissionValue?: number | null;
+  commissionPercent?: number | null;
+  status?: TransactionStatus;
+  closedAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface HistoryEvent {
+  id: string;
+  _id?: string;
+  userId?: string;
+  organizationId?: string;
+  assignedTo?: string;
+  createdBy?: string;
+  clientId?: string | null;
+  propertyId?: string | null;
+  type?: string;
+  title?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Settings {
+  id?: string;
+  userId?: string;
+  organizationId?: string;
+  companyName?: string;
+  commercialName?: string;
+  phone?: string;
+  email?: string;
+  city?: string;
+  state?: string;
+  logoUrl?: string;
+  theme?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface DashboardMetrics {
+  totalClients: number;
+  totalProperties: number;
+  totalTasks: number;
+  totalVisits: number;
+  totalProposals: number;
+  totalTransactions?: number;
+  activeClients?: number;
+  potentialCommission?: number;
+  overdueTasks?: number;
+}
+
+export interface OrganizationUsage {
+  activeClientsCount: number;
+  propertiesCount: number;
+  activeMembersCount: number;
+  plan: PlanId;
+  maxMembers: number;
+}
+
+export interface ApiErrorResponse {
+  error: string;
+  details?: string;
+}
+
+export interface ApiSuccessResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  message?: string;
 }

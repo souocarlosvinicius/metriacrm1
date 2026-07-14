@@ -2141,7 +2141,7 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
       }
     }
 
-    return mockResponse({ error: "Endpoint não encontrado" }, 404);
+    return mockResponse({ error: "Endpoint não encontrado ou não implementado" }, 501);
   }
 
   // --- DEMO MODE ACTIVE: INTERCEPTING ALL API CALLS ---
@@ -2729,5 +2729,5 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
     return mockResponse(rawCandidates.slice(0, 5));
   }
 
-  return mockResponse({ error: "Endpoint não suportado no modo de demonstração local." }, 404);
+  return mockResponse({ error: "Endpoint não suportado ou não implementado no modo de demonstração local." }, 501);
 }

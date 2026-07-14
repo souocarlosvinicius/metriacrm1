@@ -1,130 +1,25 @@
-import React, { ReactNode } from "react";
-import type { Organization, PlanFeature, PlanId } from "../types";
-import { canUseFeature, getPlanDisplayName, getUpgradeMessage } from "../config/plans";
-
-type PlanGuardMode = "card" | "hide";
+import React from "react";
+import { Organization, PlanLimits } from "../types";
+import { canUseFeature } from "../config/plans";
+import { ShieldAlert, ArrowUpRight } from "lucide-react";
 
 interface PlanGuardProps {
-  children: ReactNode;
-  feature?: PlanFeature | string;
-  planId?: PlanId | string | null;
-  currentPlan?: PlanId | string | null;
-  currentOrganization?: Partial<Organization> | null;
-  fallback?: ReactNode;
-  mode?: PlanGuardMode;
-  title?: string;
-  message?: string;
-  ctaLabel?: string;
-  onUpgradeClick?: () => void;
-  compact?: boolean;
-  className?: string;
+  feature: keyof PlanLimits;
+  currentOrganization?: Organization | null;
+  children: React.ReactNode;
+  fallback?: React.ReactNode;
 }
 
-const FEATURE_ALIASES: Record<string, PlanFeature> = {
-  full_pipeline: "full_pipeline",
-  hasFullPipeline: "full_pipeline",
+export const PlanGuard: React.FC<PlanGuardProps> = ({
+  feature,
+  currentOrganization,
+  children,
+  fallback
+}) => {
+  const plan = currentOrganization?.plan || "beta";
+  const hasAccess = canUseFeature(plan, feature);
 
-  whatsapp_templates: "whatsapp_templates",
-  hasWhatsappTemplates: "whatsapp_templates",
-
-  calendar_tasks: "calendar_tasks",
-  hasCalendarTasks: "calendar_tasks",
-
-  gemini_ai: "gemini_ai",
-  hasGeminiAI: "gemini_ai",
-
-  property_matching: "property_matching",
-  hasPropertyMatching: "property_matching",
-
-  commission_reports: "commission_reports",
-  hasCommissionReports: "commission_reports",
-
-  advanced_reports: "advanced_reports",
-  hasAdvancedReports: "advanced_reports",
-
-  team_management: "team_management",
-  hasTeamManagement: "team_management",
-
-  lead_distribution: "lead_distribution",
-  hasLeadDistribution: "lead_distribution",
-
-  manager_dashboard: "manager_dashboard",
-  hasManagerDashboard: "manager_dashboard",
-
-  advanced_manager_dashboard: "advanced_manager_dashboard",
-  hasAdvancedManagerDashboard: "advanced_manager_dashboard",
-
-  lead_transfer: "lead_transfer",
-  hasLeadTransfer: "lead_transfer",
-
-  multiple_managers: "multiple_managers",
-  hasMultipleManagers: "multiple_managers",
-};
-
-const FEATURE_TITLES: Record<PlanFeature, string> = {
-  full_pipeline: "Pipeline completo",
-  whatsapp_templates: "Templates de WhatsApp",
-  calendar_tasks: "Agenda e tarefas",
-  gemini_ai: "Inteligência artificial",
-  property_matching: "Cruzamento inteligente",
-  commission_reports: "Relatórios de comissão",
-  advanced_reports: "Relatórios avançados",
-  team_management: "Gestão de equipe",
-  lead_distribution: "Distribuição de leads",
-  manager_dashboard: "Painel gestor",
-  advanced_manager_dashboard: "Painel gestor avançado",
-  lead_transfer: "Transferência de leads",
-  multiple_managers: "Múltiplos gestores",
-};
-
-function normalizeFeature(feature?: PlanFeature | string): PlanFeature | null {
-  if (!feature) {
-    return null;
-  }
-
-  return FEATURE_ALIASES[feature] ?? null;
-}
-
-function resolvePlanId(props: PlanGuardProps): PlanId | string | null {
-  if (props.planId) {
-    return props.planId;
-  }
-
-  if (props.currentPlan) {
-    return props.currentPlan;
-  }
-
-  if (props.currentOrganization?.plan) {
-    return props.currentOrganization.plan;
-  }
-
-  return "beta";
-}
-
-export default function PlanGuard(props: PlanGuardProps) {
-  const {
-    children,
-    feature,
-    fallback,
-    mode = "card",
-    title,
-    message,
-    ctaLabel = "Ver planos",
-    onUpgradeClick,
-    compact = false,
-    className = "",
-  } = props;
-
-  const normalizedFeature = normalizeFeature(feature);
-  const currentPlanId = resolvePlanId(props);
-
-  if (!normalizedFeature) {
-    return <>{children}</>;
-  }
-
-  const allowed = canUseFeature(currentPlanId, normalizedFeature);
-
-  if (allowed) {
+  if (hasAccess) {
     return <>{children}</>;
   }
 
@@ -132,72 +27,47 @@ export default function PlanGuard(props: PlanGuardProps) {
     return <>{fallback}</>;
   }
 
-  if (mode === "hide") {
-    return null;
+  let title = "Recurso Bloqueado";
+  let message = "Este recurso não está disponível no seu plano atual.";
+
+  if (feature === "hasGeminiAI") {
+    title = "Inteligência Artificial (Gemini)";
+    message = "Este recurso está disponível nos planos Pro, Max e PRO MAX.";
+  } else if (feature === "hasTeamManagement") {
+    title = "Gestão de Equipe";
+    message = "Gestão de equipe está disponível nos planos Max e PRO MAX.";
+  } else if (feature === "hasAdvancedReports" || feature === "hasAdvancedManagerDashboard") {
+    title = "Relatórios Avançados & BI";
+    message = "Relatórios avançados estão disponíveis no Plano PRO MAX.";
+  } else if (feature === "hasManagerDashboard") {
+    title = "Painel do Gestor";
+    message = "O Painel do Gestor está disponível nos planos Max e PRO MAX.";
   }
 
-  const planName = getPlanDisplayName(currentPlanId);
-  const guardTitle = title ?? FEATURE_TITLES[normalizedFeature] ?? "Recurso bloqueado";
-  const guardMessage = message ?? getUpgradeMessage(normalizedFeature);
+  const handleUpgradeClick = () => {
+    // Navigate to Setting/Meu Plano tab
+    const event = new CustomEvent("navigate-to-settings-plan");
+    window.dispatchEvent(event);
+  };
 
   return (
-    <div
-      className={[
-        "rounded-2xl border border-slate-200 bg-white shadow-sm",
-        compact ? "p-4" : "p-6",
-        className,
-      ]
-        .filter(Boolean)
-        .join(" ")}
-    >
-      <div className="flex items-start gap-4">
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-700">
-          <span className="text-xl" aria-hidden="true">
-            🔒
-          </span>
-        </div>
-
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">
-            Recurso do plano
-          </p>
-
-          <h3 className="mt-1 text-lg font-semibold text-slate-950">
-            {guardTitle}
-          </h3>
-
-          <p className="mt-2 text-sm leading-6 text-slate-600">
-            {guardMessage}
-          </p>
-
-          <p className="mt-2 text-xs text-slate-500">
-            Plano atual: <strong>{planName}</strong>
-          </p>
-
-          {onUpgradeClick ? (
-            <button
-              type="button"
-              onClick={onUpgradeClick}
-              className="mt-4 inline-flex items-center justify-center rounded-xl bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-800"
-            >
-              {ctaLabel}
-            </button>
-          ) : null}
-        </div>
+    <div id="plan-guard-card" className="flex flex-col items-center justify-center p-8 md:p-10 text-center bg-surface-container-low border border-outline-variant/30 rounded-3xl max-w-lg mx-auto my-12 shadow-sm">
+      <div className="p-4 bg-amber-500/10 text-amber-500 rounded-2xl mb-4">
+        <ShieldAlert className="w-10 h-10" />
       </div>
+      <h3 className="text-xl font-bold text-on-surface mb-2">{title}</h3>
+      <p className="text-on-surface-variant text-sm mb-6 leading-relaxed">
+        {message} Faça o upgrade para expandir o limite e liberar todo o potencial do seu CRM.
+      </p>
+      
+      <button
+        id="plan-guard-upgrade-btn"
+        onClick={handleUpgradeClick}
+        className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary/90 text-on-primary font-medium text-sm rounded-xl transition-all shadow-sm cursor-pointer"
+      >
+        <span>Ver Planos & Upgrades</span>
+        <ArrowUpRight className="w-4 h-4" />
+      </button>
     </div>
   );
-}
-
-export function hasPlanAccess(
-  planId: PlanId | string | null | undefined,
-  feature: PlanFeature | string,
-): boolean {
-  const normalizedFeature = normalizeFeature(feature);
-
-  if (!normalizedFeature) {
-    return true;
-  }
-
-  return canUseFeature(planId, normalizedFeature);
-}
+};

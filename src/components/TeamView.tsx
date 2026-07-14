@@ -1,866 +1,709 @@
-import React, { useEffect, useMemo, useState } from "react";
-import {
+import React, { useState, useEffect } from "react";
+import { 
+  Users2, 
+  Mail, 
+  Plus, 
+  Check, 
+  Trash2, 
+  UserX, 
+  UserCheck, 
+  Send, 
+  Loader2, 
   AlertTriangle,
-  Check,
-  Copy,
-  Loader2,
-  Mail,
-  Plus,
   RefreshCw,
+  Copy,
+  ChevronRight,
   Shield,
-  Trash2,
-  UserCheck,
-  UserX,
-  Users2,
-} from "lucide-react";
-import type {
-  Organization,
-  OrganizationInvite,
-  OrganizationMember,
   User,
-  UserRole,
-} from "../types";
+  HeartHandshake
+} from "lucide-react";
+import { User as UserType, OrganizationMember, OrganizationInvite, UserRole, Organization } from "../types";
 import { apiFetch } from "../api";
-import {
-  canInviteMember,
-  formatPlanPrice,
-  getPlanLimits,
-} from "../config/plans";
+import { PlanGuard } from "./PlanGuard";
 
 interface TeamViewProps {
-  currentUser: User;
-  currentOrganization?: Organization | null;
-  onUpgradeClick?: () => void;
+  currentUser: UserType;
 }
 
-interface TransferOption {
-  id: string;
-  name: string;
-  email?: string;
-}
-
-function getUserRole(currentUser: User): UserRole {
-  const role = currentUser.currentRole;
-
-  if (role === "owner" || role === "admin" || role === "manager") {
-    return role;
-  }
-
-  return "broker";
-}
-
-function canManageTeam(role: UserRole): boolean {
-  return role === "owner" || role === "admin";
-}
-
-function canViewTeam(role: UserRole): boolean {
-  return role === "owner" || role === "admin" || role === "manager";
-}
-
-function formatRole(role: UserRole | string): string {
-  const labels: Record<string, string> = {
-    owner: "Dono",
-    admin: "Administrador",
-    manager: "Gestor",
-    broker: "Corretor",
-  };
-
-  return labels[role] ?? role;
-}
-
-function formatStatus(status: string): string {
-  const labels: Record<string, string> = {
-    active: "Ativo",
-    inactive: "Inativo",
-    pending: "Pendente",
-    accepted: "Aceito",
-    expired: "Expirado",
-    cancelled: "Cancelado",
-  };
-
-  return labels[status] ?? status;
-}
-
-function getMemberId(member: OrganizationMember): string {
-  return member.id || member._id || member.userId;
-}
-
-function getInviteId(invite: OrganizationInvite): string {
-  return invite.id || invite._id || invite.token || invite.invitedEmail;
-}
-
-export default function TeamView({
-  currentUser,
-  currentOrganization,
-  onUpgradeClick,
-}: TeamViewProps) {
+export default function TeamView({ currentUser }: TeamViewProps) {
   const [members, setMembers] = useState<OrganizationMember[]>([]);
   const [invites, setInvites] = useState<OrganizationInvite[]>([]);
-  const [transferOptions, setTransferOptions] = useState<TransferOption[]>([]);
-
+  const [organization, setOrganization] = useState<Organization | null>(null);
   const [loading, setLoading] = useState(true);
   const [submittingInvite, setSubmittingInvite] = useState(false);
   const [updatingMember, setUpdatingMember] = useState<string | null>(null);
-  const [copySuccess, setCopySuccess] = useState<string | null>(null);
-
+  
+  // Invite form states
   const [inviteName, setInviteName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<UserRole>("broker");
-  const [errorMessage, setErrorMessage] = useState("");
-  const [successMessage, setSuccessMessage] = useState("");
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  
+  // Lead Transfer states
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [transferFromId, setTransferFromId] = useState("");
+  const [transferToId, setTransferToId] = useState("");
+  const [transferringLeads, setTransferringLeads] = useState(false);
 
-  const userRole = useMemo(() => getUserRole(currentUser), [currentUser]);
-  const organizationPlan = currentOrganization?.plan ?? currentUser.plan ?? "beta";
-  const plan = useMemo(() => getPlanLimits(organizationPlan), [organizationPlan]);
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
-  const activeMembers = useMemo(
-    () => members.filter((member) => member.status !== "inactive"),
-    [members],
-  );
+  const orgId = currentUser.defaultOrganizationId;
 
-  const activeMembersCount = activeMembers.length;
-  const isTeamPlan = plan.hasTeamManagement;
-  const inviteAllowedByPlan = canInviteMember(organizationPlan, activeMembersCount);
-  const userCanManageTeam = canManageTeam(userRole);
-  const userCanViewTeam = canViewTeam(userRole);
-
-  const organizationId =
-    currentOrganization?.id ||
-    currentOrganization?._id ||
-    currentUser.currentOrganizationId ||
-    currentUser.organizationId ||
-    currentUser.defaultOrganizationId ||
-    "";
-
-  async function loadTeamData() {
+  const fetchTeamData = async () => {
+    if (!orgId) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
-    setErrorMessage("");
-    setSuccessMessage("");
-
+    setError(null);
     try {
-      const [membersResponse, invitesResponse] = await Promise.all([
-        apiFetch("/api/organizations/members"),
-        apiFetch("/api/organizations/invites"),
+      const [membersRes, invitesRes, orgsRes] = await Promise.all([
+        apiFetch(`/api/organizations/members?organizationId=${orgId}`),
+        apiFetch(`/api/organizations/invites?organizationId=${orgId}`),
+        apiFetch("/api/organizations")
       ]);
 
-      const membersData = await membersResponse.json().catch(() => []);
-      const invitesData = await invitesResponse.json().catch(() => []);
+      if (membersRes.ok && invitesRes.ok) {
+        const mData = await membersRes.json();
+        const iData = await invitesRes.json();
+        setMembers(mData);
+        setInvites(iData);
 
-      if (!membersResponse.ok) {
-        throw new Error(
-          membersData?.error || "Não foi possível carregar os membros da equipe.",
-        );
+        if (orgsRes.ok) {
+          const orgs = await orgsRes.json();
+          const activeOrg = orgs.find((o: any) => o.id === orgId);
+          setOrganization(activeOrg || null);
+        }
+      } else {
+        setError("Erro ao carregar os dados da equipe. Verifique sua conexão.");
       }
-
-      if (!invitesResponse.ok) {
-        throw new Error(
-          invitesData?.error || "Não foi possível carregar os convites da equipe.",
-        );
-      }
-
-      const normalizedMembers = Array.isArray(membersData)
-        ? membersData
-        : membersData?.members || [];
-
-      const normalizedInvites = Array.isArray(invitesData)
-        ? invitesData
-        : invitesData?.invites || [];
-
-      setMembers(normalizedMembers);
-      setInvites(normalizedInvites);
-
-      setTransferOptions(
-        normalizedMembers
-          .filter((member: OrganizationMember) => member.status !== "inactive")
-          .map((member: OrganizationMember) => ({
-            id: member.userId,
-            name: member.name || member.email || "Usuário",
-            email: member.email,
-          })),
-      );
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Erro ao carregar equipe. Verifique sua conexão.";
-
-      setErrorMessage(message);
+    } catch (err: any) {
+      console.error(err);
+      setError("Falha ao se conectar ao servidor.");
     } finally {
       setLoading(false);
     }
-  }
+  };
 
   useEffect(() => {
-    if (userCanViewTeam && isTeamPlan) {
-      void loadTeamData();
-    } else {
-      setLoading(false);
-    }
-  }, [isTeamPlan, userCanViewTeam]);
+    fetchTeamData();
+  }, [orgId]);
 
-  async function handleCreateInvite(event: React.FormEvent) {
-    event.preventDefault();
-
-    if (!userCanManageTeam) {
-      setErrorMessage("Apenas owner ou admin podem convidar corretores.");
-      return;
-    }
-
-    if (!isTeamPlan) {
-      setErrorMessage("Gestão de equipe está disponível apenas nos planos Max e PRO MAX.");
-      return;
-    }
-
-    if (!inviteAllowedByPlan) {
-      setErrorMessage(
-        plan.id === "max"
-          ? "O Plano Max permite até 5 membros ativos. Faça upgrade para PRO MAX para adicionar mais corretores."
-          : "O Plano PRO MAX permite até 30 membros ativos. Fale com vendas para um plano personalizado.",
-      );
-      return;
-    }
-
-    if (!inviteEmail.trim()) {
-      setErrorMessage("Informe o e-mail do corretor convidado.");
+  const handleSendInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmail.trim() || !inviteName.trim()) {
+      setError("Por favor, preencha o nome e o e-mail do corretor.");
       return;
     }
 
     setSubmittingInvite(true);
-    setErrorMessage("");
-    setSuccessMessage("");
+    setError(null);
+    setSuccess(null);
+
+    // Limit manager/admin for Max plan
+    const plan = organization?.plan || "beta";
+    const managementCount = members.filter(m => m.status === "active" && ["owner", "admin", "manager"].includes(m.role)).length;
+    
+    if (plan === "max" && ["admin", "manager"].includes(inviteRole) && managementCount >= 1) {
+      setError("O Plano Max permite apenas 1 gestor (administrador/gerente) na equipe. Faça o upgrade para o Plano PRO MAX para ter múltiplos gestores/administradores.");
+      setSubmittingInvite(false);
+      return;
+    }
 
     try {
-      const response = await apiFetch("/api/organizations/invites", {
+      const res = await apiFetch("/api/organizations/invites", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          organizationId,
-          invitedName: inviteName.trim() || undefined,
-          invitedEmail: inviteEmail.trim().toLowerCase(),
-          role: inviteRole,
-        }),
+          organizationId: orgId,
+          invitedEmail: inviteEmail.trim(),
+          invitedName: inviteName.trim(),
+          role: inviteRole
+        })
       });
 
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        throw new Error(data?.error || "Não foi possível criar o convite.");
+      if (res.ok) {
+        const newInvite = await res.json();
+        setInvites(prev => [newInvite, ...prev]);
+        setSuccess(`Convite gerado para ${inviteName}! Envie o link de ativação.`);
+        setInviteName("");
+        setInviteEmail("");
+        setInviteRole("broker");
+        setShowInviteModal(false);
+      } else {
+        const errJson = await res.json();
+        setError(errJson.error || "Erro ao gerar convite.");
       }
-
-      setInviteName("");
-      setInviteEmail("");
-      setInviteRole("broker");
-      setSuccessMessage("Convite criado com sucesso.");
-      await loadTeamData();
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Erro inesperado ao criar convite.";
-
-      setErrorMessage(message);
+    } catch (err) {
+      console.error(err);
+      setError("Falha na rede ao criar convite.");
     } finally {
       setSubmittingInvite(false);
     }
-  }
+  };
 
-  async function handleUpdateMember(
-    member: OrganizationMember,
-    changes: Partial<OrganizationMember>,
-  ) {
-    if (!userCanManageTeam) {
-      setErrorMessage("Apenas owner ou admin podem alterar membros da equipe.");
-      return;
-    }
-
-    const memberId = getMemberId(member);
-
+  const handleUpdateMemberStatus = async (memberId: string, newStatus: "active" | "inactive") => {
     setUpdatingMember(memberId);
-    setErrorMessage("");
-    setSuccessMessage("");
+    setError(null);
+    setSuccess(null);
 
     try {
-      const response = await apiFetch(`/api/organizations/members/${memberId}`, {
+      const member = members.find(m => m.id === memberId);
+      if (!member) return;
+
+      const res = await apiFetch(`/api/organizations/members/${memberId}`, {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(changes),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role: member.role,
+          status: newStatus
+        })
       });
 
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        throw new Error(data?.error || "Não foi possível atualizar o membro.");
+      if (res.ok) {
+        const updated = await res.json();
+        setMembers(prev => prev.map(m => m.id === memberId ? { ...m, status: updated.status } : m));
+        setSuccess(`Status do membro atualizado com sucesso para ${newStatus === "active" ? "Ativo" : "Inativo"}.`);
+        
+        // If deactivated, prompt option to transfer leads
+        if (newStatus === "inactive") {
+          setTransferFromId(member.userId);
+          setShowTransferModal(true);
+        }
+      } else {
+        const errJson = await res.json();
+        setError(errJson.error || "Erro ao atualizar status do membro.");
       }
-
-      setSuccessMessage("Membro atualizado com sucesso.");
-      await loadTeamData();
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Erro inesperado ao atualizar membro.";
-
-      setErrorMessage(message);
+    } catch (err) {
+      console.error(err);
+      setError("Erro na rede ao atualizar status do membro.");
     } finally {
       setUpdatingMember(null);
     }
-  }
+  };
 
-  async function handleCancelInvite(invite: OrganizationInvite) {
-    if (!userCanManageTeam) {
-      setErrorMessage("Apenas owner ou admin podem cancelar convites.");
+  const handleUpdateMemberRole = async (memberId: string, newRole: UserRole) => {
+    setUpdatingMember(memberId);
+    setError(null);
+    setSuccess(null);
+
+    // Limit manager/admin for Max plan
+    const plan = organization?.plan || "beta";
+    const managementMembers = members.filter(m => m.status === "active" && ["owner", "admin", "manager"].includes(m.role) && m.id !== memberId);
+    
+    if (plan === "max" && ["owner", "admin", "manager"].includes(newRole) && managementMembers.length >= 1) {
+      setError("O Plano Max permite apenas 1 gestor (administrador/gerente) na equipe. Faça o upgrade para o Plano PRO MAX para ter múltiplos gestores/administradores.");
+      setUpdatingMember(null);
       return;
     }
 
-    const inviteId = getInviteId(invite);
-
-    setUpdatingMember(inviteId);
-    setErrorMessage("");
-    setSuccessMessage("");
-
     try {
-      const response = await apiFetch(`/api/organizations/invites/${inviteId}`, {
-        method: "DELETE",
+      const member = members.find(m => m.id === memberId);
+      if (!member) return;
+
+      const res = await apiFetch(`/api/organizations/members/${memberId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role: newRole,
+          status: member.status
+        })
       });
 
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        throw new Error(data?.error || "Não foi possível cancelar o convite.");
+      if (res.ok) {
+        const updated = await res.json();
+        setMembers(prev => prev.map(m => m.id === memberId ? { ...m, role: updated.role } : m));
+        setSuccess(`Função do membro atualizada para ${newRole === "owner" ? "Proprietário" : newRole === "admin" ? "Administrador" : newRole === "manager" ? "Gerente" : "Corretor"}.`);
+      } else {
+        const errJson = await res.json();
+        setError(errJson.error || "Erro ao atualizar função.");
       }
-
-      setSuccessMessage("Convite cancelado com sucesso.");
-      await loadTeamData();
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Erro inesperado ao cancelar convite.";
-
-      setErrorMessage(message);
+    } catch (err) {
+      console.error(err);
+      setError("Erro na rede ao atualizar função do membro.");
     } finally {
       setUpdatingMember(null);
     }
-  }
+  };
 
-  async function handleCopyInviteLink(invite: OrganizationInvite) {
-    const token = invite.token;
-
-    if (!token) {
-      setErrorMessage("Este convite ainda não possui link.");
+  const handleTransferLeads = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!transferFromId || !transferToId) {
+      setError("Selecione os corretores de origem e destino para transferir.");
+      return;
+    }
+    if (transferFromId === transferToId) {
+      setError("O corretor de destino deve ser diferente do de origem.");
       return;
     }
 
-    const baseUrl = window.location.origin;
-    const inviteLink = `${baseUrl}/invite/${token}`;
+    setTransferringLeads(true);
+    setError(null);
+    setSuccess(null);
 
     try {
-      await navigator.clipboard.writeText(inviteLink);
-      setCopySuccess(token);
-      setTimeout(() => setCopySuccess(null), 2500);
-    } catch {
-      setErrorMessage("Não foi possível copiar o link. Copie manualmente: " + inviteLink);
+      const res = await apiFetch("/api/clients/transfer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fromUserId: transferFromId,
+          toUserId: transferToId,
+          organizationId: orgId
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setSuccess(`Sucesso! ${data.count} clientes/leads foram transferidos com sucesso.`);
+        setShowTransferModal(false);
+        setTransferFromId("");
+        setTransferToId("");
+      } else {
+        const errJson = await res.json();
+        setError(errJson.error || "Erro ao transferir leads.");
+      }
+    } catch (err) {
+      console.error(err);
+      setError("Erro de rede ao transferir leads.");
+    } finally {
+      setTransferringLeads(false);
     }
-  }
+  };
 
-  if (!isTeamPlan) {
+  const copyInviteLink = (token: string) => {
+    const activationLink = `${window.location.origin}?invite=${token}`;
+    navigator.clipboard.writeText(activationLink);
+    setCopiedToken(token);
+    setTimeout(() => setCopiedToken(null), 3000);
+  };
+
+  const isOwnerOrAdmin = currentUser.currentRole === "owner" || currentUser.currentRole === "admin";
+
+  if (!orgId) {
     return (
-      <div className="space-y-6">
-        <div className="rounded-3xl border border-blue-100 bg-blue-50 p-6">
-          <div className="flex items-start gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-700 text-white">
-              <Users2 size={22} />
-            </div>
-
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-wide text-blue-700">
-                Recurso bloqueado pelo plano
-              </p>
-
-              <h2 className="mt-1 text-2xl font-bold text-slate-950">
-                Gestão de equipe disponível nos planos Max e PRO MAX
-              </h2>
-
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-700">
-                Seu plano atual é {plan.name}. Para cadastrar corretores,
-                distribuir leads e acompanhar relatórios por corretor, faça
-                upgrade para Max ou PRO MAX.
-              </p>
-
-              {onUpgradeClick ? (
-                <button
-                  type="button"
-                  onClick={onUpgradeClick}
-                  className="mt-5 rounded-xl bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-800"
-                >
-                  Ver planos
-                </button>
-              ) : null}
-            </div>
-          </div>
+      <div className="bg-surface rounded-3xl p-8 border border-outline-variant/40 shadow-sm text-center max-w-md mx-auto my-12 space-y-6">
+        <div className="w-16 h-16 bg-primary/10 text-primary rounded-2xl flex items-center justify-center mx-auto shadow-inner">
+          <Shield className="w-8 h-8" />
         </div>
-      </div>
-    );
-  }
-
-  if (!userCanViewTeam) {
-    return (
-      <div className="rounded-3xl border border-amber-200 bg-amber-50 p-6">
-        <div className="flex items-start gap-4">
-          <AlertTriangle className="mt-1 text-amber-700" size={22} />
-
-          <div>
-            <h2 className="text-xl font-bold text-amber-950">
-              Acesso restrito
-            </h2>
-
-            <p className="mt-2 text-sm leading-6 text-amber-800">
-              Corretores não têm acesso à gestão de equipe. Fale com um owner,
-              admin ou gestor da organização.
-            </p>
-          </div>
+        <div className="space-y-2">
+          <h2 className="font-display text-xl font-black text-primary">Conta Individual Activa</h2>
+          <p className="text-sm text-on-surface-variant leading-relaxed">
+            Sua conta está configurada no formato <strong>Corretor Autônomo</strong>. O menu de Equipe é exclusivo para contas de tipo <strong>Imobiliária / Equipe</strong>.
+          </p>
         </div>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div className="flex min-h-[360px] items-center justify-center">
-        <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
-          <Loader2 className="animate-spin text-blue-700" size={20} />
-          <span className="text-sm font-medium text-slate-700">
-            Carregando equipe...
-          </span>
-        </div>
+        <p className="text-xs text-on-surface-variant/70 italic leading-relaxed">
+          Se você gerencia uma imobiliária e quer cadastrar corretores, pode converter sua conta nas Configurações da conta.
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <header className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-wide text-blue-700">
-              Equipe
-            </p>
-
-            <h1 className="mt-1 text-2xl font-bold text-slate-950">
-              Corretores e permissões
-            </h1>
-
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-              Gerencie os usuários da organização, convites, cargos e limites do
-              plano contratado.
-            </p>
-          </div>
-
-          <button
-            type="button"
-            onClick={loadTeamData}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-          >
-            <RefreshCw size={16} />
-            Atualizar
-          </button>
+    <PlanGuard feature="hasTeamManagement" currentOrganization={organization}>
+      <div className="space-y-6 text-left" id="team-view-container">
+      {/* View Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <span className="text-[10px] text-secondary font-bold uppercase tracking-widest block mb-0.5">Organização & Equipe</span>
+          <h1 className="font-display text-2xl font-extrabold text-primary tracking-tight leading-none">Gestão de Corretores</h1>
+          <p className="text-xs text-on-surface-variant mt-1">Gerencie os corretores parceiros, permissões e convites ativos na sua base.</p>
         </div>
 
-        <div className="mt-6 grid gap-3 md:grid-cols-3">
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Plano atual
-            </p>
-            <p className="mt-1 text-lg font-bold text-slate-950">{plan.name}</p>
-            <p className="text-sm text-slate-600">{formatPlanPrice(plan.id)}</p>
+        {isOwnerOrAdmin && (
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                setTransferFromId("");
+                setTransferToId("");
+                setShowTransferModal(true);
+              }}
+              className="px-4 py-2 bg-surface-container-high border border-outline-variant/60 hover:bg-surface-container-highest font-bold text-xs rounded-xl flex items-center gap-1.5 cursor-pointer text-primary transition-all"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Transferir Carteira
+            </button>
+            <button
+              onClick={() => setShowInviteModal(true)}
+              className="px-4 py-2 bg-primary hover:opacity-95 text-on-primary font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-md shadow-primary/10 cursor-pointer transition-all"
+            >
+              <Plus className="w-4.5 h-4.5 stroke-[2.5]" />
+              Convidar Corretor
+            </button>
           </div>
+        )}
+      </div>
 
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Membros ativos
-            </p>
-            <p className="mt-1 text-lg font-bold text-slate-950">
-              {activeMembersCount}/{plan.maxMembers}
-            </p>
-            <p className="text-sm text-slate-600">
-              Limite conforme o plano contratado
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Seu cargo
-            </p>
-            <p className="mt-1 text-lg font-bold text-slate-950">
-              {formatRole(userRole)}
-            </p>
-            <p className="text-sm text-slate-600">
-              {userCanManageTeam
-                ? "Pode gerenciar equipe"
-                : "Acesso apenas de visualização"}
-            </p>
-          </div>
+      {/* Messages */}
+      {error && (
+        <div className="p-4 bg-error-container text-on-error-container text-xs font-semibold rounded-2xl border border-error/20 flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>{error}</span>
         </div>
-      </header>
+      )}
 
-      {errorMessage ? (
-        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {errorMessage}
+      {success && (
+        <div className="p-4 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 text-xs font-semibold rounded-2xl border border-emerald-500/20 flex items-center gap-2">
+          <Check className="w-4 h-4 shrink-0" />
+          <span>{success}</span>
         </div>
-      ) : null}
+      )}
 
-      {successMessage ? (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          {successMessage}
+      {loading ? (
+        <div className="py-20 flex flex-col items-center justify-center gap-3">
+          <Loader2 className="w-8 h-8 text-primary animate-spin" />
+          <p className="text-xs font-semibold text-on-surface-variant">Carregando dados da imobiliária...</p>
         </div>
-      ) : null}
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Members List (Left/Middle) */}
+          <div className="lg:col-span-2 space-y-4">
+            <div className="bg-surface rounded-2xl border border-outline-variant/40 shadow-sm overflow-hidden">
+              <div className="p-4 bg-surface-container-low border-b border-outline-variant/30 flex justify-between items-center">
+                <h3 className="text-xs font-black text-primary uppercase tracking-wider flex items-center gap-1.5">
+                  <Users2 className="w-4 h-4 text-secondary" />
+                  Corretores Cadastrados ({members.length})
+                </h3>
+                <button 
+                  onClick={fetchTeamData}
+                  className="p-1.5 hover:bg-surface-container rounded-lg text-on-surface-variant/70 hover:text-primary transition-all"
+                  title="Atualizar dados"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
 
-      {userCanManageTeam ? (
-        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-blue-50 text-blue-700">
-              <Plus size={20} />
-            </div>
-
-            <div>
-              <h2 className="text-lg font-bold text-slate-950">
-                Convidar corretor
-              </h2>
-              <p className="text-sm text-slate-600">
-                Crie um convite e envie o link para o novo membro.
-              </p>
-            </div>
-          </div>
-
-          {!inviteAllowedByPlan ? (
-            <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              {plan.id === "max"
-                ? "Você atingiu o limite de 5 membros do Plano Max. Faça upgrade para PRO MAX para até 30 corretores."
-                : "Você atingiu o limite de membros deste plano. Fale com vendas para uma condição personalizada."}
-            </div>
-          ) : null}
-
-          <form
-            onSubmit={handleCreateInvite}
-            className="mt-5 grid gap-4 lg:grid-cols-[1fr_1fr_190px_auto]"
-          >
-            <label className="block">
-              <span className="text-sm font-medium text-slate-700">
-                Nome
-              </span>
-              <input
-                value={inviteName}
-                onChange={(event) => setInviteName(event.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-600"
-                placeholder="Nome do corretor"
-              />
-            </label>
-
-            <label className="block">
-              <span className="text-sm font-medium text-slate-700">
-                E-mail
-              </span>
-              <input
-                type="email"
-                value={inviteEmail}
-                onChange={(event) => setInviteEmail(event.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-600"
-                placeholder="corretor@email.com"
-              />
-            </label>
-
-            <label className="block">
-              <span className="text-sm font-medium text-slate-700">
-                Cargo
-              </span>
-              <select
-                value={inviteRole}
-                onChange={(event) =>
-                  setInviteRole(event.target.value as UserRole)
-                }
-                className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-600"
-              >
-                <option value="broker">Corretor</option>
-                <option value="manager">Gestor</option>
-                <option value="admin">Administrador</option>
-              </select>
-            </label>
-
-            <div className="flex items-end">
-              <button
-                type="submit"
-                disabled={submittingInvite || !inviteAllowedByPlan}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {submittingInvite ? (
-                  <Loader2 className="animate-spin" size={16} />
+              <div className="divide-y divide-outline-variant/25">
+                {members.length === 0 ? (
+                  <div className="p-8 text-center text-xs text-on-surface-variant">
+                    Nenhum corretor cadastrado ainda nesta imobiliária.
+                  </div>
                 ) : (
-                  <Mail size={16} />
-                )}
-                Convidar
-              </button>
-            </div>
-          </form>
-        </section>
-      ) : null}
+                  members.map(member => {
+                    const isSelf = member.userId === currentUser.id;
+                    return (
+                      <div key={member.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-surface-container-low/30 transition-colors">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full bg-primary/5 text-primary border border-primary/10 flex items-center justify-center text-xs font-bold uppercase shrink-0">
+                            {member.name?.slice(0, 2) || "CO"}
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-sm text-on-surface">
+                                {member.name} {isSelf && <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-md font-bold ml-1">Você</span>}
+                              </span>
+                              <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
+                                member.status === "active" ? "bg-emerald-500/10 text-emerald-700" : "bg-error/10 text-error"
+                              }`}>
+                                {member.status === "active" ? "Ativo" : "Inativo"}
+                              </span>
+                            </div>
+                            <div className="text-xs text-on-surface-variant mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span className="flex items-center gap-1">
+                                <Mail className="w-3 h-3" />
+                                {member.email}
+                              </span>
+                              {member.creci && (
+                                <span className="text-[10px] bg-surface-container-high px-1.5 py-0.5 rounded-md text-on-surface-variant font-mono">
+                                  CRECI: {member.creci}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-bold text-slate-950">
-              Corretores cadastrados
-            </h2>
-            <p className="text-sm text-slate-600">
-              Membros ativos e inativos da organização.
-            </p>
+                        <div className="flex items-center gap-2 self-end sm:self-center">
+                          {/* Role Selector */}
+                          {isOwnerOrAdmin && !isSelf ? (
+                            <select
+                              value={member.role}
+                              disabled={updatingMember !== null}
+                              onChange={(e) => handleUpdateMemberRole(member.id, e.target.value as UserRole)}
+                              className="text-xs bg-surface-container-high border border-outline-variant/60 rounded-xl px-2.5 py-1.5 text-on-surface focus:outline-none focus:border-primary/50 transition-all font-semibold"
+                            >
+                              <option value="broker">Corretor</option>
+                              <option value="manager">Gerente</option>
+                              <option value="admin">Administrador</option>
+                              <option value="owner">Proprietário</option>
+                            </select>
+                          ) : (
+                            <span className="text-xs font-bold text-on-surface-variant/80 bg-surface-container px-3 py-1.5 rounded-xl border border-outline-variant/20 uppercase tracking-wider">
+                              {member.role === "owner" ? "Proprietário" : member.role === "admin" ? "Administrador" : member.role === "manager" ? "Gerente" : "Corretor"}
+                            </span>
+                          )}
+
+                          {/* Deactivate/Activate Status Button */}
+                          {isOwnerOrAdmin && !isSelf && (
+                            <button
+                              onClick={() => handleUpdateMemberStatus(member.id, member.status === "active" ? "inactive" : "active")}
+                              disabled={updatingMember !== null}
+                              className={`p-2 rounded-xl transition-all cursor-pointer ${
+                                member.status === "active"
+                                  ? "bg-error/5 hover:bg-error/10 text-error border border-error/10"
+                                  : "bg-emerald-500/5 hover:bg-emerald-500/10 text-emerald-600 border border-emerald-500/10"
+                              }`}
+                              title={member.status === "active" ? "Inativar corretor" : "Ativar corretor"}
+                            >
+                              {updatingMember === member.id ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : member.status === "active" ? (
+                                <UserX className="w-4 h-4" />
+                              ) : (
+                                <UserCheck className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           </div>
 
-          <Users2 className="text-slate-400" size={22} />
-        </div>
+          {/* Pending Invites & Access Levels (Right Sidebar) */}
+          <div className="space-y-6">
+            {/* Pending Invites Card */}
+            <div className="bg-surface rounded-2xl border border-outline-variant/40 shadow-sm overflow-hidden text-left">
+              <div className="p-4 bg-surface-container-low border-b border-outline-variant/30 flex justify-between items-center">
+                <h3 className="text-xs font-black text-primary uppercase tracking-wider flex items-center gap-1.5">
+                  <Send className="w-3.5 h-3.5 text-secondary" />
+                  Convites Pendentes ({invites.filter(i => i.status === "pending").length})
+                </h3>
+              </div>
 
-        <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200">
-          {members.length === 0 ? (
-            <div className="p-6 text-center text-sm text-slate-500">
-              Nenhum corretor cadastrado ainda.
-            </div>
-          ) : (
-            <div className="divide-y divide-slate-200">
-              {members.map((member) => {
-                const memberId = getMemberId(member);
-                const isUpdating = updatingMember === memberId;
-                const isCurrentUser = member.userId === currentUser.id;
-
-                return (
-                  <div
-                    key={memberId}
-                    className="grid gap-4 p-4 md:grid-cols-[1fr_170px_170px_auto]"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="truncate font-semibold text-slate-950">
-                          {member.name || "Sem nome"}
-                        </p>
-
-                        {member.role === "owner" ? (
-                          <Shield className="text-blue-700" size={16} />
-                        ) : null}
-
-                        {isCurrentUser ? (
-                          <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">
-                            Você
-                          </span>
-                        ) : null}
+              <div className="divide-y divide-outline-variant/25">
+                {invites.filter(i => i.status === "pending").length === 0 ? (
+                  <div className="p-6 text-center text-xs text-on-surface-variant leading-relaxed">
+                    Nenhum convite pendente. Use o botão <strong>Convidar Corretor</strong> para cadastrar novas credenciais.
+                  </div>
+                ) : (
+                  invites.filter(i => i.status === "pending").map(invite => (
+                    <div key={invite.id} className="p-4 space-y-2">
+                      <div className="flex justify-between items-start gap-2">
+                        <div>
+                          <p className="text-xs font-bold text-on-surface">{invite.invitedName}</p>
+                          <p className="text-[11px] text-on-surface-variant font-medium truncate max-w-[150px]">{invite.invitedEmail}</p>
+                        </div>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-secondary-container text-on-secondary-container uppercase tracking-wider shrink-0">
+                          {invite.role === "owner" ? "Owner" : invite.role === "admin" ? "Admin" : invite.role === "manager" ? "Manager" : "Corretor"}
+                        </span>
                       </div>
 
-                      <p className="mt-1 truncate text-sm text-slate-500">
-                        {member.email || "Sem e-mail"}
-                      </p>
-                    </div>
-
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Cargo
-                      </p>
-
-                      {userCanManageTeam && member.role !== "owner" ? (
-                        <select
-                          value={member.role}
-                          disabled={isUpdating}
-                          onChange={(event) =>
-                            handleUpdateMember(member, {
-                              role: event.target.value as UserRole,
-                            })
-                          }
-                          className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-600"
-                        >
-                          <option value="broker">Corretor</option>
-                          <option value="manager">Gestor</option>
-                          <option value="admin">Administrador</option>
-                        </select>
-                      ) : (
-                        <p className="mt-2 text-sm font-medium text-slate-700">
-                          {formatRole(member.role)}
-                        </p>
-                      )}
-                    </div>
-
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Status
-                      </p>
-
-                      <p className="mt-2 inline-flex items-center gap-2 text-sm font-medium text-slate-700">
-                        {member.status === "active" ? (
-                          <UserCheck className="text-emerald-600" size={16} />
-                        ) : (
-                          <UserX className="text-slate-400" size={16} />
-                        )}
-                        {formatStatus(member.status)}
-                      </p>
-                    </div>
-
-                    <div className="flex items-center justify-end gap-2">
-                      {userCanManageTeam && member.role !== "owner" ? (
+                      {/* Invite Link Action */}
+                      <div className="flex items-center gap-1 bg-surface-container-low p-1.5 rounded-lg border border-outline-variant/50">
+                        <span className="text-[10px] font-mono font-medium text-on-surface-variant truncate flex-1 pl-1">
+                          {window.location.origin}?invite={invite.token}
+                        </span>
                         <button
-                          type="button"
-                          disabled={isUpdating}
-                          onClick={() =>
-                            handleUpdateMember(member, {
-                              status:
-                                member.status === "active"
-                                  ? "inactive"
-                                  : "active",
-                            })
-                          }
-                          className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+                          onClick={() => copyInviteLink(invite.token)}
+                          className="p-1 hover:bg-surface-container-high rounded-md text-primary transition-all cursor-pointer"
+                          title="Copiar link do convite"
                         >
-                          {isUpdating ? (
-                            <Loader2 className="animate-spin" size={15} />
-                          ) : member.status === "active" ? (
-                            <UserX size={15} />
+                          {copiedToken === invite.token ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-600" />
                           ) : (
-                            <UserCheck size={15} />
+                            <Copy className="w-3.5 h-3.5" />
                           )}
-                          {member.status === "active" ? "Inativar" : "Ativar"}
                         </button>
-                      ) : null}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  ))
+                )}
+              </div>
             </div>
-          )}
-        </div>
-      </section>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-bold text-slate-950">
-              Convites pendentes
-            </h2>
-            <p className="text-sm text-slate-600">
-              Links gerados para novos corretores entrarem na organização.
-            </p>
+            {/* Role guide */}
+            <div className="bg-surface-container-low rounded-2xl border border-outline-variant/30 p-4 space-y-3.5 text-left text-xs leading-relaxed">
+              <h3 className="text-xs font-bold text-primary uppercase tracking-wider flex items-center gap-1.5">
+                <Shield className="w-4 h-4 text-secondary" />
+                Guia de Níveis de Acesso
+              </h3>
+              <div className="space-y-2.5">
+                <div>
+                  <span className="font-bold text-primary block">Proprietário (Owner)</span>
+                  <span className="text-on-surface-variant">Dono da imobiliária. Possui controle total da organização, dados de corretores, propostas, e configurações globais.</span>
+                </div>
+                <div>
+                  <span className="font-bold text-primary block">Administrador / Gerente</span>
+                  <span className="text-on-surface-variant">Gerencia a equipe, convida novos corretores e tem visibilidade completa de todos os leads e imóveis cadastrados.</span>
+                </div>
+                <div>
+                  <span className="font-bold text-primary block">Corretor (Broker)</span>
+                  <span className="text-on-surface-variant">Atua com foco individual. Enxerga e gerencia apenas a sua própria carteira de leads e tarefas, além de cadastrar imóveis na base comum da imobiliária.</span>
+                </div>
+              </div>
+            </div>
           </div>
-
-          <Mail className="text-slate-400" size={22} />
         </div>
+      )}
 
-        <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200">
-          {invites.length === 0 ? (
-            <div className="p-6 text-center text-sm text-slate-500">
-              Nenhum convite criado ainda.
+      {/* Invite Modal */}
+      {showInviteModal && (
+        <div className="fixed inset-0 bg-primary/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-surface rounded-3xl p-6 border border-outline-variant w-full max-w-md shadow-2xl space-y-4">
+            <div className="flex justify-between items-center pb-2 border-b border-outline-variant/30">
+              <h3 className="font-display text-base font-bold text-primary">Convidar Novo Corretor</h3>
+              <button 
+                onClick={() => setShowInviteModal(false)}
+                className="p-1 hover:bg-surface-container rounded-lg text-on-surface-variant"
+              >
+                <Trash2 className="w-4.5 h-4.5" />
+              </button>
             </div>
-          ) : (
-            <div className="divide-y divide-slate-200">
-              {invites.map((invite) => {
-                const inviteId = getInviteId(invite);
-                const isUpdating = updatingMember === inviteId;
-                const canCopy = Boolean(invite.token);
-                const copied = invite.token && copySuccess === invite.token;
 
-                return (
-                  <div
-                    key={inviteId}
-                    className="grid gap-4 p-4 md:grid-cols-[1fr_150px_150px_auto]"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate font-semibold text-slate-950">
-                        {invite.invitedName || "Sem nome"}
-                      </p>
+            <form onSubmit={handleSendInvite} className="space-y-4 text-left">
+              <div>
+                <label className="block text-xs font-bold text-on-surface-variant mb-1 uppercase tracking-wider">Nome Completo</label>
+                <input
+                  type="text"
+                  required
+                  value={inviteName}
+                  onChange={(e) => setInviteName(e.target.value)}
+                  placeholder="Ex: Matheus Oliveira"
+                  className="w-full px-3 py-2 text-sm bg-surface-container-high border border-outline-variant rounded-xl focus:outline-none focus:border-primary/50 text-on-surface"
+                />
+              </div>
 
-                      <p className="mt-1 truncate text-sm text-slate-500">
-                        {invite.invitedEmail}
-                      </p>
-                    </div>
+              <div>
+                <label className="block text-xs font-bold text-on-surface-variant mb-1 uppercase tracking-wider">E-mail de Trabalho</label>
+                <input
+                  type="email"
+                  required
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="Ex: matheus@imobiliaria.com"
+                  className="w-full px-3 py-2 text-sm bg-surface-container-high border border-outline-variant rounded-xl focus:outline-none focus:border-primary/50 text-on-surface"
+                />
+              </div>
 
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Cargo
-                      </p>
-                      <p className="mt-2 text-sm font-medium text-slate-700">
-                        {formatRole(invite.role)}
-                      </p>
-                    </div>
+              <div>
+                <label className="block text-xs font-bold text-on-surface-variant mb-1 uppercase tracking-wider">Nível de Permissão</label>
+                <select
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value as UserRole)}
+                  className="w-full px-3 py-2 text-sm bg-surface-container-high border border-outline-variant rounded-xl focus:outline-none focus:border-primary/50 text-on-surface font-semibold"
+                >
+                  <option value="broker">Corretor (Acesso restrito à própria carteira)</option>
+                  <option value="manager">Gerente (Acesso a toda a carteira da imobiliária)</option>
+                  <option value="admin">Administrador (Acesso total)</option>
+                </select>
+              </div>
 
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Status
-                      </p>
-                      <p className="mt-2 inline-flex items-center gap-2 text-sm font-medium text-slate-700">
-                        {invite.status === "accepted" ? (
-                          <Check className="text-emerald-600" size={16} />
-                        ) : (
-                          <Mail className="text-blue-600" size={16} />
-                        )}
-                        {formatStatus(invite.status)}
-                      </p>
-                    </div>
-
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        disabled={!canCopy}
-                        onClick={() => handleCopyInviteLink(invite)}
-                        className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <Copy size={15} />
-                        {copied ? "Copiado" : "Copiar"}
-                      </button>
-
-                      {userCanManageTeam && invite.status === "pending" ? (
-                        <button
-                          type="button"
-                          disabled={isUpdating}
-                          onClick={() => handleCancelInvite(invite)}
-                          className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:opacity-60"
-                        >
-                          {isUpdating ? (
-                            <Loader2 className="animate-spin" size={15} />
-                          ) : (
-                            <Trash2 size={15} />
-                          )}
-                          Cancelar
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </section>
-
-      {plan.hasLeadTransfer ? (
-        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-950">
-            Transferência de leads
-          </h2>
-
-          <p className="mt-2 text-sm leading-6 text-slate-600">
-            A transferência individual ou em massa deve ser feita a partir da
-            lista de clientes. Esta seção apenas confirma que o plano atual
-            permite transferir leads entre corretores.
-          </p>
-
-          <div className="mt-4 rounded-2xl bg-slate-50 p-4">
-            <p className="text-sm font-semibold text-slate-950">
-              Corretores disponíveis para receber leads: {transferOptions.length}
-            </p>
-
-            <p className="mt-1 text-sm text-slate-600">
-              Planos Max e PRO MAX permitem transferência de leads por owner,
-              admin ou manager.
-            </p>
+              <div className="flex gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowInviteModal(false)}
+                  className="flex-1 py-2.5 bg-surface-container-high hover:bg-surface-container-highest border border-outline-variant/50 rounded-xl text-xs font-bold text-on-surface-variant cursor-pointer transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingInvite}
+                  className="flex-1 py-2.5 bg-primary hover:opacity-95 text-on-primary rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-md shadow-primary/10 cursor-pointer transition-all"
+                >
+                  {submittingInvite ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <>
+                      Gerar Convite
+                      <Send className="w-3.5 h-3.5" />
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
-        </section>
-      ) : null}
-    </div>
+        </div>
+      )}
+
+      {/* Transfer Portfolio Modal */}
+      {showTransferModal && (
+        <div className="fixed inset-0 bg-primary/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-surface rounded-3xl p-6 border border-outline-variant w-full max-w-md shadow-2xl space-y-4">
+            <div className="flex justify-between items-center pb-2 border-b border-outline-variant/30">
+              <h3 className="font-display text-base font-bold text-primary flex items-center gap-1.5">
+                <RefreshCw className="w-4.5 h-4.5 text-secondary" />
+                Transferir Carteira de Leads
+              </h3>
+              <button 
+                onClick={() => setShowTransferModal(false)}
+                className="p-1 hover:bg-surface-container rounded-lg text-on-surface-variant"
+              >
+                <Trash2 className="w-4.5 h-4.5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-on-surface-variant leading-relaxed">
+              Transfira a atribuição de todos os clientes e leads de um corretor específico para outro corretor ativo dentro da sua organização imobiliária.
+            </p>
+
+            <form onSubmit={handleTransferLeads} className="space-y-4 text-left">
+              <div>
+                <label className="block text-xs font-bold text-on-surface-variant mb-1 uppercase tracking-wider">De (Corretor Origem)</label>
+                <select
+                  value={transferFromId}
+                  onChange={(e) => setTransferFromId(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 text-sm bg-surface-container-high border border-outline-variant rounded-xl focus:outline-none focus:border-primary/50 text-on-surface font-semibold"
+                >
+                  <option value="">Selecione o corretor...</option>
+                  {members.map(m => (
+                    <option key={m.id} value={m.userId}>
+                      {m.name} ({m.role === "owner" ? "Proprietário" : m.role === "admin" ? "Admin" : m.role === "manager" ? "Gerente" : "Corretor"})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-on-surface-variant mb-1 uppercase tracking-wider">Para (Corretor Destino)</label>
+                <select
+                  value={transferToId}
+                  onChange={(e) => setTransferToId(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 text-sm bg-surface-container-high border border-outline-variant rounded-xl focus:outline-none focus:border-primary/50 text-on-surface font-semibold"
+                >
+                  <option value="">Selecione o corretor ativo...</option>
+                  {members.filter(m => m.status === "active" && m.userId !== transferFromId).map(m => (
+                    <option key={m.id} value={m.userId}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowTransferModal(false)}
+                  className="flex-1 py-2.5 bg-surface-container-high hover:bg-surface-container-highest border border-outline-variant/50 rounded-xl text-xs font-bold text-on-surface-variant cursor-pointer transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={transferringLeads}
+                  className="flex-1 py-2.5 bg-primary hover:opacity-95 text-on-primary rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-md shadow-primary/10 cursor-pointer transition-all"
+                >
+                  {transferringLeads ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <>
+                      Confirmar Transferência
+                      <Check className="w-3.5 h-3.5" />
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      </div>
+    </PlanGuard>
   );
 }

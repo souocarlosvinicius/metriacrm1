@@ -204,14 +204,11 @@ export interface User {
   messageTemplates?: MessageTemplates; // Custom message templates
   isDemo?: boolean; // Demo mode flag
   sessionToken?: string; // Session token
-  
-  // Multi-tenant additions
   defaultOrganizationId?: string;
   accountType?: AccountType;
   currentRole?: UserRole;
 }
 
-// Multi-tenant Types
 export type UserRole = "owner" | "admin" | "manager" | "broker";
 export type AccountType = "broker" | "agency";
 
@@ -300,4 +297,3 @@ export interface OrganizationInvite {
   createdAt?: string;
   acceptedAt?: string;
 }
-

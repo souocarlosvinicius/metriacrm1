@@ -1,4 +1,3 @@
--- Enable UUID generation extension
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
@@ -1259,14 +1258,6 @@ BEGIN
     IF v_members_count >= 5 THEN
       RETURN FALSE;
     END IF;
-  ELSIF v_plan = 'pro_max' THEN
-    SELECT count(*) INTO v_members_count FROM public.organization_members WHERE organization_id = p_org_id AND status = 'active';
-    IF v_members_count >= 30 THEN
-      RETURN FALSE;
-    END IF;
-  ELSE
-    -- beta, start, pro are single user (limit = 1, cannot invite others)
-    RETURN FALSE;
   END IF;
   RETURN TRUE;
 END;

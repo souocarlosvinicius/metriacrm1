@@ -11,7 +11,7 @@ import {
 
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
-interface ActiveSessionContext {
+interface SessionContext {
   user: any;
   profile: any | null;
   organizationId: string | null;
@@ -31,22 +31,6 @@ function jsonResponse(data: unknown, status = 200): Response {
 
 function getMethod(init?: RequestInit): HttpMethod {
   return ((init?.method || "GET").toUpperCase() as HttpMethod) || "GET";
-}
-
-async function readBody(init?: RequestInit): Promise<any> {
-  if (!init?.body) {
-    return {};
-  }
-
-  if (typeof init.body === "string") {
-    try {
-      return JSON.parse(init.body);
-    } catch {
-      return {};
-    }
-  }
-
-  return init.body;
 }
 
 function getPath(input: RequestInfo | URL): string {
@@ -70,43 +54,45 @@ function getQuery(input: RequestInfo | URL): URLSearchParams {
   return new URLSearchParams(queryString);
 }
 
-function isDemoRequest(input: RequestInfo | URL): boolean {
+function isExplicitDemoRequest(input: RequestInfo | URL): boolean {
   const query = getQuery(input);
   return query.get("isDemo") === "true" || query.get("demo") === "true";
 }
 
-function getStoredDemoUser(): any | null {
-  try {
-    const raw = localStorage.getItem("vega_crm_user");
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
+async function readBody(init?: RequestInit): Promise<any> {
+  if (!init?.body) {
+    return {};
   }
-}
 
-function saveStoredDemoUser(user: any) {
-  localStorage.setItem("vega_crm_user", JSON.stringify(user));
-}
-
-function getLocalList(key: string): any[] {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
+  if (typeof init.body === "string") {
+    try {
+      return JSON.parse(init.body);
+    } catch {
+      return {};
+    }
   }
-}
 
-function saveLocalList(key: string, value: any[]) {
-  localStorage.setItem(key, JSON.stringify(value));
+  return init.body;
 }
 
 function makeId(prefix = "id"): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
+  if (typeof globalThis.crypto !== "undefined" && "randomUUID" in globalThis.crypto) {
+    return globalThis.crypto.randomUUID();
   }
 
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
+function cleanPayload(payload: Record<string, any>): Record<string, any> {
+  const output: Record<string, any> = {};
+
+  Object.entries(payload || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      output[key] = value;
+    }
+  });
+
+  return output;
 }
 
 function toSnake(input: Record<string, any>): Record<string, any> {
@@ -124,31 +110,36 @@ function toSnake(input: Record<string, any>): Record<string, any> {
   return output;
 }
 
-function toCamel(input: Record<string, any>): Record<string, any> {
+function toCamel(input: Record<string, any> | null): Record<string, any> {
+  if (!input) {
+    return {};
+  }
+
   const output: Record<string, any> = {};
 
-  Object.entries(input || {}).forEach(([key, value]) => {
+  Object.entries(input).forEach(([key, value]) => {
     const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
     output[camelKey] = value;
   });
 
-  if (input?.id && !output._id) {
+  if (input.id && !output._id) {
     output._id = input.id;
   }
 
   return output;
 }
 
-function cleanPayload(payload: Record<string, any>): Record<string, any> {
-  const output: Record<string, any> = {};
+function getLocalList(key: string): any[] {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
 
-  Object.entries(payload || {}).forEach(([key, value]) => {
-    if (value !== undefined) {
-      output[key] = value;
-    }
-  });
-
-  return output;
+function saveLocalList(key: string, value: any[]): void {
+  localStorage.setItem(key, JSON.stringify(value));
 }
 
 function profileToDb(profile: any): any {
@@ -165,40 +156,50 @@ function profileToDb(profile: any): any {
     acting_type: profile.actingType,
     onboarding_completed: profile.onboardingCompleted,
     default_organization_id: profile.defaultOrganizationId,
+    current_organization_id:
+      profile.currentOrganizationId ||
+      profile.organizationId ||
+      profile.defaultOrganizationId,
     account_type: profile.accountType,
     current_role: profile.currentRole,
     updated_at: new Date().toISOString(),
   });
 }
 
-function organizationToDb(org: any): any {
+function organizationToDb(organization: any): any {
+  const plan = (organization.plan || "beta") as PlanId;
+
   return cleanPayload({
-    id: org.id || org._id,
-    name: org.name,
-    trade_name: org.tradeName,
-    document: org.document,
-    creci: org.creci,
-    phone: org.phone,
-    email: org.email,
-    city: org.city,
-    state: org.state,
-    owner_id: org.ownerId,
-    plan: org.plan,
-    subscription_status: org.subscriptionStatus || "active",
-    subscription_started_at: org.subscriptionStartedAt,
-    subscription_expires_at: org.subscriptionExpiresAt,
-    plan_updated_at: org.planUpdatedAt || new Date().toISOString(),
-    max_members: org.maxMembers ?? getMaxMembersByPlan(org.plan),
-    billing_email: org.billingEmail,
-    billing_document: org.billingDocument,
+    id: organization.id || organization._id,
+    name: organization.name,
+    trade_name: organization.tradeName,
+    document: organization.document,
+    creci: organization.creci,
+    phone: organization.phone,
+    email: organization.email,
+    city: organization.city,
+    state: organization.state,
+    owner_id: organization.ownerId,
+    plan,
+    subscription_status: organization.subscriptionStatus || "active",
+    subscription_started_at:
+      organization.subscriptionStartedAt || new Date().toISOString(),
+    subscription_expires_at: organization.subscriptionExpiresAt,
+    plan_updated_at: organization.planUpdatedAt || new Date().toISOString(),
+    max_members: organization.maxMembers ?? getMaxMembersByPlan(plan),
+    billing_email: organization.billingEmail,
+    billing_document: organization.billingDocument,
     updated_at: new Date().toISOString(),
   });
 }
 
-function commercialToDb(payload: any, ctx: ActiveSessionContext): any {
-  const db = toSnake(payload);
+function commercialToDb(payload: any, ctx: SessionContext): any {
+  const db = toSnake(payload || {});
 
+  delete db.id;
   delete db._id;
+  delete db.created_at;
+  delete db.updated_at;
 
   return cleanPayload({
     ...db,
@@ -218,36 +219,45 @@ function canManageLeads(role: string): boolean {
   return role === "owner" || role === "admin" || role === "manager";
 }
 
-async function getSessionContext(): Promise<ActiveSessionContext | null> {
-  const { data: sessionData, error: sessionError } = await supabase.auth.getUser();
+async function getSessionContext(): Promise<SessionContext | null> {
+  const { data: userData, error: userError } = await supabase.auth.getUser();
 
-  if (sessionError || !sessionData?.user) {
+  if (userError || !userData?.user) {
     return null;
   }
 
-  const user = sessionData.user;
+  const user = userData.user;
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from("profiles")
     .select("*")
     .eq("id", user.id)
     .maybeSingle();
 
+  if (profileError) {
+    throw new Error(profileError.message);
+  }
+
   let organizationId =
-    profile?.default_organization_id ||
     profile?.current_organization_id ||
+    profile?.default_organization_id ||
     null;
 
   let member: any | null = null;
 
   if (!organizationId) {
-    const { data: firstMember } = await supabase
+    const { data: firstMember, error: firstMemberError } = await supabase
       .from("organization_members")
       .select("*")
       .eq("user_id", user.id)
       .eq("status", "active")
+      .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
+
+    if (firstMemberError) {
+      throw new Error(firstMemberError.message);
+    }
 
     if (firstMember) {
       member = firstMember;
@@ -258,22 +268,30 @@ async function getSessionContext(): Promise<ActiveSessionContext | null> {
   let organization: any | null = null;
 
   if (organizationId) {
-    const { data: orgData } = await supabase
+    const { data: orgData, error: orgError } = await supabase
       .from("organizations")
       .select("*")
       .eq("id", organizationId)
       .maybeSingle();
 
+    if (orgError) {
+      throw new Error(orgError.message);
+    }
+
     organization = orgData || null;
   }
 
   if (organizationId && !member) {
-    const { data: memberData } = await supabase
+    const { data: memberData, error: memberError } = await supabase
       .from("organization_members")
       .select("*")
       .eq("organization_id", organizationId)
       .eq("user_id", user.id)
       .maybeSingle();
+
+    if (memberError) {
+      throw new Error(memberError.message);
+    }
 
     member = memberData || null;
   }
@@ -298,10 +316,12 @@ async function getOrganizationUsage(organizationId: string) {
       .select("id", { count: "exact", head: true })
       .eq("organization_id", organizationId)
       .neq("status", "inactive"),
+
     supabase
       .from("properties")
       .select("id", { count: "exact", head: true })
       .eq("organization_id", organizationId),
+
     supabase
       .from("organization_members")
       .select("id", { count: "exact", head: true })
@@ -316,7 +336,7 @@ async function getOrganizationUsage(organizationId: string) {
   };
 }
 
-async function validateClientLimit(ctx: ActiveSessionContext): Promise<Response | null> {
+async function validateClientLimit(ctx: SessionContext): Promise<Response | null> {
   if (!ctx.organizationId) {
     return jsonResponse({ error: "Organização ativa não encontrada." }, 400);
   }
@@ -336,7 +356,7 @@ async function validateClientLimit(ctx: ActiveSessionContext): Promise<Response 
   return null;
 }
 
-async function validatePropertyLimit(ctx: ActiveSessionContext): Promise<Response | null> {
+async function validatePropertyLimit(ctx: SessionContext): Promise<Response | null> {
   if (!ctx.organizationId) {
     return jsonResponse({ error: "Organização ativa não encontrada." }, 400);
   }
@@ -356,7 +376,7 @@ async function validatePropertyLimit(ctx: ActiveSessionContext): Promise<Respons
   return null;
 }
 
-async function validateMemberLimit(ctx: ActiveSessionContext): Promise<Response | null> {
+async function validateMemberLimit(ctx: SessionContext): Promise<Response | null> {
   if (!ctx.organizationId) {
     return jsonResponse({ error: "Organização ativa não encontrada." }, 400);
   }
@@ -396,10 +416,10 @@ async function validateMemberLimit(ctx: ActiveSessionContext): Promise<Response 
   return null;
 }
 
-function validateFeature(ctx: ActiveSessionContext, feature: PlanFeature): Response | null {
+function validateFeature(ctx: SessionContext, feature: PlanFeature): Response | null {
   if (!canUseFeature(ctx.plan, feature)) {
     return jsonResponse(
-      { error: `Este recurso não está disponível no plano atual.` },
+      { error: "Este recurso não está disponível no seu plano atual." },
       403,
     );
   }
@@ -407,7 +427,11 @@ function validateFeature(ctx: ActiveSessionContext, feature: PlanFeature): Respo
   return null;
 }
 
-async function handleAuth(path: string, method: HttpMethod, init?: RequestInit): Promise<Response> {
+async function handleAuth(
+  path: string,
+  method: HttpMethod,
+  init?: RequestInit,
+): Promise<Response> {
   const body = await readBody(init);
 
   if (path === "/api/auth/me" && method === "GET") {
@@ -417,19 +441,17 @@ async function handleAuth(path: string, method: HttpMethod, init?: RequestInit):
       return jsonResponse({ user: null }, 401);
     }
 
-    const user = {
+    return jsonResponse({
       id: ctx.user.id,
       email: ctx.user.email,
-      ...toCamel(ctx.profile || {}),
+      ...toCamel(ctx.profile),
       defaultOrganizationId: ctx.organizationId,
       currentOrganizationId: ctx.organizationId,
       organizationId: ctx.organizationId,
       currentRole: ctx.role,
       plan: ctx.plan,
       organization: ctx.organization ? toCamel(ctx.organization) : null,
-    };
-
-    return jsonResponse(user);
+    });
   }
 
   if (path === "/api/auth/login" && method === "POST") {
@@ -443,6 +465,8 @@ async function handleAuth(path: string, method: HttpMethod, init?: RequestInit):
     if (error) {
       return jsonResponse({ error: error.message }, 401);
     }
+
+    localStorage.removeItem("vega_crm_user");
 
     return jsonResponse({
       success: true,
@@ -469,7 +493,7 @@ async function handleAuth(path: string, method: HttpMethod, init?: RequestInit):
     }
 
     if (data.user) {
-      await supabase.from("profiles").upsert(
+      const { error: profileError } = await supabase.from("profiles").upsert(
         profileToDb({
           id: data.user.id,
           email,
@@ -477,6 +501,10 @@ async function handleAuth(path: string, method: HttpMethod, init?: RequestInit):
           onboardingCompleted: false,
         }),
       );
+
+      if (profileError) {
+        console.warn("Profile upsert after signup failed:", profileError.message);
+      }
     }
 
     return jsonResponse({
@@ -493,7 +521,10 @@ async function handleAuth(path: string, method: HttpMethod, init?: RequestInit):
     return jsonResponse({ success: true });
   }
 
-  if (path.startsWith("/api/auth/update/") && (method === "PUT" || method === "PATCH")) {
+  if (
+    path.startsWith("/api/auth/update/") &&
+    (method === "PUT" || method === "PATCH")
+  ) {
     const userId = decodeURIComponent(path.replace("/api/auth/update/", ""));
     const ctx = await getSessionContext();
 
@@ -527,7 +558,11 @@ async function handleAuth(path: string, method: HttpMethod, init?: RequestInit):
   return jsonResponse({ error: "Rota de autenticação não encontrada." }, 404);
 }
 
-async function handleOrganizations(path: string, method: HttpMethod, init?: RequestInit): Promise<Response> {
+async function handleOrganizations(
+  path: string,
+  method: HttpMethod,
+  init?: RequestInit,
+): Promise<Response> {
   const body = await readBody(init);
   const ctx = await getSessionContext();
 
@@ -546,12 +581,12 @@ async function handleOrganizations(path: string, method: HttpMethod, init?: Requ
       return jsonResponse({ error: error.message }, 400);
     }
 
-    const organizations = (data || []).map((item: any) => ({
-      ...toCamel(item.organizations || {}),
-      role: item.role,
-    }));
-
-    return jsonResponse(organizations);
+    return jsonResponse(
+      (data || []).map((item: any) => ({
+        ...toCamel(item.organizations || {}),
+        role: item.role,
+      })),
+    );
   }
 
   if (path === "/api/organizations" && method === "POST") {
@@ -564,7 +599,8 @@ async function handleOrganizations(path: string, method: HttpMethod, init?: Requ
       plan,
       maxMembers,
       subscriptionStatus: body.subscriptionStatus || "active",
-      subscriptionStartedAt: body.subscriptionStartedAt || new Date().toISOString(),
+      subscriptionStartedAt:
+        body.subscriptionStartedAt || new Date().toISOString(),
       planUpdatedAt: new Date().toISOString(),
     });
 
@@ -578,18 +614,16 @@ async function handleOrganizations(path: string, method: HttpMethod, init?: Requ
       return jsonResponse({ error: error.message }, 400);
     }
 
-    const memberPayload = {
-      organization_id: organization.id,
-      user_id: ctx.user.id,
-      name: ctx.profile?.name || ctx.user.user_metadata?.name || ctx.user.email,
-      email: ctx.user.email,
-      role: "owner",
-      status: "active",
-    };
-
     const { error: memberError } = await supabase
       .from("organization_members")
-      .upsert(memberPayload);
+      .upsert({
+        organization_id: organization.id,
+        user_id: ctx.user.id,
+        name: ctx.profile?.name || ctx.user.user_metadata?.name || ctx.user.email,
+        email: ctx.user.email,
+        role: "owner",
+        status: "active",
+      });
 
     if (memberError) {
       return jsonResponse({ error: memberError.message }, 400);
@@ -599,12 +633,54 @@ async function handleOrganizations(path: string, method: HttpMethod, init?: Requ
       id: ctx.user.id,
       email: ctx.user.email,
       default_organization_id: organization.id,
+      current_organization_id: organization.id,
       current_role: "owner",
       account_type: body.accountType || "broker",
       updated_at: new Date().toISOString(),
     });
 
     return jsonResponse(toCamel(organization), 201);
+  }
+
+  if (
+    path.startsWith("/api/organizations/") &&
+    !path.startsWith("/api/organizations/members") &&
+    !path.startsWith("/api/organizations/invites") &&
+    (method === "PUT" || method === "PATCH")
+  ) {
+    if (!ctx.organizationId) {
+      return jsonResponse({ error: "Organização ativa não encontrada." }, 400);
+    }
+
+    if (!canManageOrganization(ctx.role)) {
+      return jsonResponse(
+        { error: "Apenas owner ou admin podem alterar a organização." },
+        403,
+      );
+    }
+
+    const organizationId = decodeURIComponent(path.replace("/api/organizations/", ""));
+
+    if (organizationId !== ctx.organizationId) {
+      return jsonResponse({ error: "Organização inválida." }, 403);
+    }
+
+    const updatePayload = organizationToDb(body);
+    delete updatePayload.id;
+    delete updatePayload.owner_id;
+
+    const { data, error } = await supabase
+      .from("organizations")
+      .update(updatePayload)
+      .eq("id", organizationId)
+      .select("*")
+      .single();
+
+    if (error) {
+      return jsonResponse({ error: error.message }, 400);
+    }
+
+    return jsonResponse(toCamel(data));
   }
 
   if (path === "/api/organizations/members" && method === "GET") {
@@ -625,16 +701,25 @@ async function handleOrganizations(path: string, method: HttpMethod, init?: Requ
     return jsonResponse((data || []).map(toCamel));
   }
 
-  if (path.startsWith("/api/organizations/members/") && (method === "PUT" || method === "PATCH")) {
+  if (
+    path.startsWith("/api/organizations/members/") &&
+    (method === "PUT" || method === "PATCH")
+  ) {
     if (!ctx.organizationId) {
       return jsonResponse({ error: "Organização ativa não encontrada." }, 400);
     }
 
     if (!canManageOrganization(ctx.role)) {
-      return jsonResponse({ error: "Apenas owner ou admin podem alterar membros." }, 403);
+      return jsonResponse(
+        { error: "Apenas owner ou admin podem alterar membros." },
+        403,
+      );
     }
 
-    const memberId = decodeURIComponent(path.replace("/api/organizations/members/", ""));
+    const memberId = decodeURIComponent(
+      path.replace("/api/organizations/members/", ""),
+    );
+
     const updatePayload = cleanPayload({
       role: body.role,
       status: body.status,
@@ -653,7 +738,11 @@ async function handleOrganizations(path: string, method: HttpMethod, init?: Requ
       return jsonResponse({ error: error.message }, 400);
     }
 
-    return jsonResponse(toCamel(data || {}));
+    if (!data) {
+      return jsonResponse({ error: "Membro não encontrado." }, 404);
+    }
+
+    return jsonResponse(toCamel(data));
   }
 
   if (path === "/api/organizations/invites" && method === "GET") {
@@ -681,20 +770,22 @@ async function handleOrganizations(path: string, method: HttpMethod, init?: Requ
       return limitError;
     }
 
-    const token = makeId("invite");
-
     const invitePayload = {
       organization_id: ctx.organizationId,
       invited_name: body.invitedName,
-      invited_email: body.invitedEmail,
+      invited_email: String(body.invitedEmail || "").toLowerCase(),
       role: body.role || "broker",
-      token,
+      token: makeId("invite"),
       status: "pending",
       invited_by: ctx.user.id,
       expires_at:
         body.expiresAt ||
         new Date(Date.now() + 1000 * 60 * 60 * 24 * 7).toISOString(),
     };
+
+    if (!invitePayload.invited_email) {
+      return jsonResponse({ error: "E-mail do convidado é obrigatório." }, 400);
+    }
 
     const { data, error } = await supabase
       .from("organization_invites")
@@ -707,30 +798,6 @@ async function handleOrganizations(path: string, method: HttpMethod, init?: Requ
     }
 
     return jsonResponse(toCamel(data), 201);
-  }
-
-  if (path.startsWith("/api/organizations/invites/") && method === "DELETE") {
-    if (!ctx.organizationId) {
-      return jsonResponse({ error: "Organização ativa não encontrada." }, 400);
-    }
-
-    if (!canManageOrganization(ctx.role)) {
-      return jsonResponse({ error: "Apenas owner ou admin podem cancelar convites." }, 403);
-    }
-
-    const inviteId = decodeURIComponent(path.replace("/api/organizations/invites/", ""));
-
-    const { error } = await supabase
-      .from("organization_invites")
-      .delete()
-      .eq("id", inviteId)
-      .eq("organization_id", ctx.organizationId);
-
-    if (error) {
-      return jsonResponse({ error: error.message }, 400);
-    }
-
-    return jsonResponse({ success: true, deletedId: inviteId });
   }
 
   if (path === "/api/organizations/invites/accept" && method === "POST") {
@@ -779,11 +846,49 @@ async function handleOrganizations(path: string, method: HttpMethod, init?: Requ
       id: ctx.user.id,
       email: ctx.user.email,
       default_organization_id: invite.organization_id,
+      current_organization_id: invite.organization_id,
       current_role: invite.role || "broker",
       updated_at: new Date().toISOString(),
     });
 
-    return jsonResponse({ success: true, organizationId: invite.organization_id });
+    return jsonResponse({
+      success: true,
+      organizationId: invite.organization_id,
+    });
+  }
+
+  if (path.startsWith("/api/organizations/invites/") && method === "DELETE") {
+    if (!ctx.organizationId) {
+      return jsonResponse({ error: "Organização ativa não encontrada." }, 400);
+    }
+
+    if (!canManageOrganization(ctx.role)) {
+      return jsonResponse(
+        { error: "Apenas owner ou admin podem cancelar convites." },
+        403,
+      );
+    }
+
+    const inviteId = decodeURIComponent(
+      path.replace("/api/organizations/invites/", ""),
+    );
+
+    const { data, error } = await supabase
+      .from("organization_invites")
+      .delete()
+      .eq("id", inviteId)
+      .eq("organization_id", ctx.organizationId)
+      .select("id");
+
+    if (error) {
+      return jsonResponse({ error: error.message }, 400);
+    }
+
+    if (!data || data.length === 0) {
+      return jsonResponse({ error: "Convite não encontrado." }, 404);
+    }
+
+    return jsonResponse({ success: true, deletedId: inviteId });
   }
 
   return jsonResponse({ error: "Rota de organização não encontrada." }, 404);
@@ -808,7 +913,9 @@ async function handleCollection(
 
   const basePath = `/api/${table}`;
   const isSingle = path.startsWith(`${basePath}/`);
-  const recordId = isSingle ? decodeURIComponent(path.replace(`${basePath}/`, "")) : null;
+  const recordId = isSingle
+    ? decodeURIComponent(path.replace(`${basePath}/`, ""))
+    : null;
 
   if (path === basePath && method === "GET") {
     let query = supabase
@@ -909,7 +1016,10 @@ async function handleCollection(
     }
 
     if (!data) {
-      return jsonResponse({ error: "Registro não encontrado ou sem permissão." }, 404);
+      return jsonResponse(
+        { error: "Registro não encontrado ou sem permissão." },
+        404,
+      );
     }
 
     return jsonResponse(toCamel(data));
@@ -935,7 +1045,7 @@ async function handleCollection(
       .eq("organization_id", ctx.organizationId);
 
     if (ctx.role === "broker") {
-      query = query.or(`created_by.eq.${ctx.user.id},assigned_to.eq.${ctx.user.id}`);
+      query = query.or(`assigned_to.eq.${ctx.user.id},created_by.eq.${ctx.user.id}`);
     }
 
     const { data, error } = await query.select("id");
@@ -945,16 +1055,22 @@ async function handleCollection(
     }
 
     if (!data || data.length === 0) {
-      return jsonResponse({ error: "Registro não encontrado ou sem permissão." }, 404);
+      return jsonResponse(
+        { error: "Registro não encontrado ou sem permissão." },
+        404,
+      );
     }
 
     return jsonResponse({ success: true, deletedId: recordId });
   }
 
-  return jsonResponse({ error: `Rota ${path} não implementada.` }, 501);
+  return jsonResponse({ error: `Rota não implementada: ${path}` }, 501);
 }
 
-async function handleTransferClients(method: HttpMethod, init?: RequestInit): Promise<Response> {
+async function handleTransferClients(
+  method: HttpMethod,
+  init?: RequestInit,
+): Promise<Response> {
   const body = await readBody(init);
   const ctx = await getSessionContext();
 
@@ -977,6 +1093,10 @@ async function handleTransferClients(method: HttpMethod, init?: RequestInit): Pr
       { error: "Apenas owner, admin ou manager podem transferir leads." },
       403,
     );
+  }
+
+  if (!ctx.organizationId) {
+    return jsonResponse({ error: "Organização ativa não encontrada." }, 400);
   }
 
   const clientIds: string[] = body.clientIds || [];
@@ -1010,7 +1130,73 @@ async function handleTransferClients(method: HttpMethod, init?: RequestInit): Pr
   });
 }
 
-async function handleAi(path: string, method: HttpMethod, init?: RequestInit): Promise<Response> {
+async function handleDashboard(): Promise<Response> {
+  const ctx = await getSessionContext();
+
+  if (!ctx) {
+    return jsonResponse({ error: "Não autenticado." }, 401);
+  }
+
+  if (!ctx.organizationId) {
+    return jsonResponse({
+      totalClients: 0,
+      totalProperties: 0,
+      totalTasks: 0,
+      totalVisits: 0,
+      totalProposals: 0,
+      potentialCommission: 0,
+      overdueTasks: 0,
+    });
+  }
+
+  const [
+    clientsResult,
+    propertiesResult,
+    tasksResult,
+    visitsResult,
+    proposalsResult,
+  ] = await Promise.all([
+    supabase
+      .from("clients")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", ctx.organizationId),
+
+    supabase
+      .from("properties")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", ctx.organizationId),
+
+    supabase
+      .from("tasks")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", ctx.organizationId),
+
+    supabase
+      .from("visits")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", ctx.organizationId),
+
+    supabase
+      .from("proposals")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", ctx.organizationId),
+  ]);
+
+  return jsonResponse({
+    totalClients: clientsResult.count || 0,
+    totalProperties: propertiesResult.count || 0,
+    totalTasks: tasksResult.count || 0,
+    totalVisits: visitsResult.count || 0,
+    totalProposals: proposalsResult.count || 0,
+    potentialCommission: 0,
+    overdueTasks: 0,
+  });
+}
+
+async function handleAi(
+  path: string,
+  init?: RequestInit,
+): Promise<Response> {
   const ctx = await getSessionContext();
 
   if (!ctx) {
@@ -1023,27 +1209,44 @@ async function handleAi(path: string, method: HttpMethod, init?: RequestInit): P
     return featureError;
   }
 
-  return fetch(path, init);
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData.session?.access_token;
+
+  const headers = new Headers(init?.headers || {});
+
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const response = await fetch(path, {
+    ...init,
+    headers,
+  });
+
+  return response;
 }
 
 async function handleStatus(): Promise<Response> {
   const ctx = await getSessionContext();
 
-  const status = {
+  return jsonResponse({
     ok: true,
     authenticated: Boolean(ctx),
     organizationId: ctx?.organizationId || null,
     plan: ctx?.plan || null,
     role: ctx?.role || null,
     database: "supabase",
-  };
-
-  return jsonResponse(status);
+  });
 }
 
-async function handleDemo(path: string, method: HttpMethod, init?: RequestInit): Promise<Response> {
+async function handleDemo(
+  path: string,
+  method: HttpMethod,
+  init?: RequestInit,
+): Promise<Response> {
   const body = await readBody(init);
-  const user = getStoredDemoUser() || {
+
+  const demoUser = {
     id: "demo-user",
     email: "demo@metria.app",
     name: "Usuário Demo",
@@ -1052,8 +1255,6 @@ async function handleDemo(path: string, method: HttpMethod, init?: RequestInit):
     currentRole: "owner",
     plan: "pro_max",
   };
-
-  saveStoredDemoUser(user);
 
   const collectionMap: Record<string, string> = {
     "/api/clients": "demo_clients",
@@ -1064,11 +1265,17 @@ async function handleDemo(path: string, method: HttpMethod, init?: RequestInit):
   };
 
   if (path === "/api/auth/me") {
-    return jsonResponse(user);
+    return jsonResponse(demoUser);
   }
 
-  if (path === "/api/auth/logout") {
-    return jsonResponse({ success: true });
+  if (path === "/api/status") {
+    return jsonResponse({
+      ok: true,
+      authenticated: true,
+      database: "demo",
+      plan: "pro_max",
+      role: "owner",
+    });
   }
 
   const collectionPath = Object.keys(collectionMap).find(
@@ -1076,7 +1283,10 @@ async function handleDemo(path: string, method: HttpMethod, init?: RequestInit):
   );
 
   if (!collectionPath) {
-    return jsonResponse({ error: "Rota demo não implementada." }, 501);
+    return jsonResponse(
+      { error: "Rota demo não implementada. Use Supabase real para esta ação." },
+      501,
+    );
   }
 
   const key = collectionMap[collectionPath];
@@ -1089,10 +1299,12 @@ async function handleDemo(path: string, method: HttpMethod, init?: RequestInit):
   }
 
   if (path === collectionPath && method === "POST") {
+    const id = makeId("demo");
+
     const record = {
       ...body,
-      id: makeId("demo"),
-      _id: makeId("demo"),
+      id,
+      _id: id,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1109,13 +1321,25 @@ async function handleDemo(path: string, method: HttpMethod, init?: RequestInit):
     );
 
     saveLocalList(key, updated);
-    return jsonResponse(updated.find((item) => item.id === recordId || item._id === recordId));
+
+    const record = updated.find(
+      (item) => item.id === recordId || item._id === recordId,
+    );
+
+    return jsonResponse(record || { error: "Registro demo não encontrado." }, record ? 200 : 404);
   }
 
   if (isSingle && recordId && method === "DELETE") {
-    const filtered = list.filter((item) => item.id !== recordId && item._id !== recordId);
+    const filtered = list.filter(
+      (item) => item.id !== recordId && item._id !== recordId,
+    );
+
     saveLocalList(key, filtered);
-    return jsonResponse({ success: true, deletedId: recordId });
+
+    return jsonResponse({
+      success: true,
+      deletedId: recordId,
+    });
   }
 
   return jsonResponse({ error: "Rota demo não implementada." }, 501);
@@ -1129,7 +1353,7 @@ export async function apiFetch(
   const method = getMethod(init);
 
   try {
-    if (isDemoRequest(input)) {
+    if (isExplicitDemoRequest(input)) {
       return handleDemo(path, method, init);
     }
 
@@ -1141,14 +1365,15 @@ export async function apiFetch(
       return handleStatus();
     }
 
+    if (path === "/api/dashboard") {
+      return handleDashboard();
+    }
+
     if (path === "/api/clients/transfer") {
       return handleTransferClients(method, init);
     }
 
-    if (
-      path === "/api/organizations" ||
-      path.startsWith("/api/organizations/")
-    ) {
+    if (path === "/api/organizations" || path.startsWith("/api/organizations/")) {
       return handleOrganizations(path, method, init);
     }
 
@@ -1172,14 +1397,26 @@ export async function apiFetch(
       return handleCollection("proposals", path, method, init);
     }
 
+    if (path === "/api/transactions" || path.startsWith("/api/transactions/")) {
+      return handleCollection("transactions", path, method, init);
+    }
+
+    if (path === "/api/history_events" || path.startsWith("/api/history_events/")) {
+      return handleCollection("history_events", path, method, init);
+    }
+
+    if (path === "/api/settings" || path.startsWith("/api/settings/")) {
+      return handleCollection("settings", path, method, init);
+    }
+
     if (path.startsWith("/api/ai/")) {
-      return handleAi(path, method, init);
+      return handleAi(path, init);
     }
 
     return jsonResponse({ error: `Rota não encontrada: ${path}` }, 404);
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Erro inesperado na API local.";
+      error instanceof Error ? error.message : "Erro inesperado na camada API.";
 
     return jsonResponse({ error: message }, 500);
   }

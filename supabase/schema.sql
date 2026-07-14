@@ -1061,6 +1061,7 @@ CREATE POLICY "Allow authenticated users to delete own property-images" ON stora
 -- 17. CASCADE DELETE CLIENT RPC FUNCTION (MODIFIED)
 -- ==========================================
 
+DROP FUNCTION IF EXISTS public.delete_client_cascade(uuid);
 CREATE OR REPLACE FUNCTION public.delete_client_cascade(p_client_id uuid)
 RETURNS json
 LANGUAGE plpgsql
@@ -1135,6 +1136,7 @@ END;
 $$;
 
 -- Plan Limits and Usage Security Helper Functions
+DROP FUNCTION IF EXISTS public.get_organization_usage(uuid);
 CREATE OR REPLACE FUNCTION public.get_organization_usage(p_org_id uuid)
 RETURNS json
 LANGUAGE plpgsql
@@ -1184,6 +1186,7 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS public.can_create_client(uuid);
 CREATE OR REPLACE FUNCTION public.can_create_client(p_org_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -1209,6 +1212,7 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS public.can_create_property(uuid);
 CREATE OR REPLACE FUNCTION public.can_create_property(p_org_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -1234,6 +1238,7 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS public.can_invite_member(uuid);
 CREATE OR REPLACE FUNCTION public.can_invite_member(p_org_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -1267,6 +1272,7 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS public.can_use_feature(uuid, text);
 CREATE OR REPLACE FUNCTION public.can_use_feature(p_org_id uuid, p_feature text)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -1318,6 +1324,7 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS public.get_user_plan_access(uuid);
 CREATE OR REPLACE FUNCTION public.get_user_plan_access(p_org_id uuid)
 RETURNS json
 LANGUAGE plpgsql

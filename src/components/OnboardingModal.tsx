@@ -46,6 +46,7 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
   const [commercialName, setCommercialName] = useState("");
   const [creci, setCreci] = useState("");
   const [primaryCity, setPrimaryCity] = useState("");
+  const [stateUf, setStateUf] = useState("");
   const [phone, setPhone] = useState(user.phone || "");
   const [email, setEmail] = useState(user.email || "");
   const [actingType, setActingType] = useState<typeof ACTING_TYPES[number]["id"]>("Geral");
@@ -66,6 +67,10 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
     } else if (step === 3) {
       if (!primaryCity.trim()) {
         setError("A cidade principal de atuação é obrigatória.");
+        return;
+      }
+      if (!stateUf.trim()) {
+        setError("O estado (UF) de atuação é obrigatório.");
         return;
       }
       if (!phone.trim()) {
@@ -105,7 +110,7 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
           phone: phone.trim(),
           email: email.trim(),
           city: primaryCity.trim(),
-          state: "SP",
+          state: stateUf.trim(),
           accountType: accountType,
           plan: plan // beta, start, pro, max
         })
@@ -143,10 +148,8 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
       }
 
       // Refetch final profile
-      const userRes = await apiFetch(`/api/auth/update/${user.id || user._id || user.username || "vega"}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+      const userRes = await apiFetch("/api/auth/me", {
+        method: "GET"
       });
 
       if (userRes.ok) {
@@ -502,8 +505,8 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
                 </div>
 
                 <div className="space-y-3.5 pt-1.5">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                    <div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+                    <div className="md:col-span-2">
                       <label className="block text-xs font-bold text-on-surface-variant mb-1.5 uppercase tracking-wider">
                         Cidade Principal de Atuação <span className="text-error">*</span>
                       </label>
@@ -514,7 +517,7 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
                           required
                           value={primaryCity}
                           onChange={(e) => setPrimaryCity(e.target.value)}
-                          placeholder="Ex: São Paulo / SP"
+                          placeholder="Ex: São Paulo"
                           className="w-full pl-11 pr-4 py-2.5 text-sm bg-surface-container-high border border-outline-variant/60 rounded-xl focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all text-on-surface"
                         />
                       </div>
@@ -522,19 +525,37 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
 
                     <div>
                       <label className="block text-xs font-bold text-on-surface-variant mb-1.5 uppercase tracking-wider">
-                        WhatsApp {accountType === "agency" ? "da Imobiliária" : "Comercial"} <span className="text-error">*</span>
+                        UF <span className="text-error">*</span>
                       </label>
                       <div className="relative">
-                        <Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-on-surface-variant/60" />
+                        <MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-on-surface-variant/60" />
                         <input
                           type="text"
                           required
-                          value={phone}
-                          onChange={(e) => setPhone(e.target.value)}
-                          placeholder="Ex: (11) 98765-4321"
+                          maxLength={2}
+                          value={stateUf}
+                          onChange={(e) => setStateUf(e.target.value.toUpperCase())}
+                          placeholder="Ex: SP"
                           className="w-full pl-11 pr-4 py-2.5 text-sm bg-surface-container-high border border-outline-variant/60 rounded-xl focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all text-on-surface"
                         />
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3.5">
+                    <label className="block text-xs font-bold text-on-surface-variant mb-1.5 uppercase tracking-wider">
+                      WhatsApp {accountType === "agency" ? "da Imobiliária" : "Comercial"} <span className="text-error">*</span>
+                    </label>
+                    <div className="relative">
+                      <Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-on-surface-variant/60" />
+                      <input
+                        type="text"
+                        required
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        placeholder="Ex: (11) 98765-4321"
+                        className="w-full pl-11 pr-4 py-2.5 text-sm bg-surface-container-high border border-outline-variant/60 rounded-xl focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all text-on-surface"
+                      />
                     </div>
                   </div>
 
@@ -621,8 +642,8 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
                       <span className="font-semibold text-on-surface text-sm">{actingType}</span>
                     </div>
                     <div>
-                      <span className="text-on-surface-variant font-bold block uppercase tracking-wider text-[10px]">Cidade</span>
-                      <span className="font-semibold text-on-surface text-sm">{primaryCity}</span>
+                      <span className="text-on-surface-variant font-bold block uppercase tracking-wider text-[10px]">Cidade / UF</span>
+                      <span className="font-semibold text-on-surface text-sm">{primaryCity}{stateUf ? ` - ${stateUf}` : ""}</span>
                     </div>
                     <div>
                       <span className="text-on-surface-variant font-bold block uppercase tracking-wider text-[10px]">WhatsApp</span>

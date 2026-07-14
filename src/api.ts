@@ -779,17 +779,11 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
       try {
         const absoluteUrl = `${window.location.origin}${pathname}`;
         const res = await window.fetch(absoluteUrl, init);
-        if (res.ok) {
-          return res;
-        }
-        console.warn(`[Supabase Fallback] Backend fetch returned status ${res.status}. Falling back to local offline handler.`);
-      } catch (fetchErr) {
-        console.warn("[Supabase Fallback] Backend fetch failed with error:", fetchErr, ". Falling back to local offline handler.");
+        return res;
+      } catch (fetchErr: any) {
+        console.error("[Supabase AI Fetch Error]", fetchErr);
+        return mockResponse({ error: `Erro na requisição para o serviço de IA: ${fetchErr.message || "Falha de rede"}` }, 502);
       }
-
-      // Recursive call with forced demo parameter to run the local mock block!
-      const fallbackUrl = url.includes("?") ? `${url}&isDemo=true` : `${url}?isDemo=true`;
-      return apiFetch(fallbackUrl, init);
     }
 
     // Forward organization creation/fetch to Express backend with bearer token
@@ -808,17 +802,11 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
       try {
         const absoluteUrl = `${window.location.origin}${pathname}`;
         const res = await window.fetch(absoluteUrl, init);
-        if (res.ok) {
-          return res;
-        }
-        console.warn(`[Supabase Fallback] Backend fetch returned status ${res.status}. Falling back to local offline handler.`);
-      } catch (fetchErr) {
-        console.warn("[Supabase Fallback] Backend fetch failed with error:", fetchErr, ". Falling back to local offline handler.");
+        return res;
+      } catch (fetchErr: any) {
+        console.error("[Supabase Organizations Fetch Error]", fetchErr);
+        return mockResponse({ error: `Erro na requisição para a organização: ${fetchErr.message || "Falha de rede"}` }, 502);
       }
-
-      // Recursive call with forced demo parameter to run the local mock block!
-      const fallbackUrl = url.includes("?") ? `${url}&isDemo=true` : `${url}?isDemo=true`;
-      return apiFetch(fallbackUrl, init);
     }
 
     // 1. SYSTEM STATUS

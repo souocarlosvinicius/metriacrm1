@@ -145,15 +145,70 @@ const requireAuth = async (req: any, res: any, next: any) => {
           req.userId = user.id;
           req.user = user;
           return next();
+        } else {
+          return res.status(401).json({ error: "Sessão inválida ou expirada. Por favor, faça login novamente." });
         }
       }
     } catch (err) {
       console.error("Erro ao verificar token com Supabase no backend:", err);
+      return res.status(500).json({ error: "Erro interno ao validar autenticação." });
     }
   }
 
-  // Fallback to anonymous user ID if no envs are configured (lets UI run gracefully)
-  req.userId = "anonymous";
+  return res.status(401).json({ error: "Supabase não configurado no servidor. Não é possível autenticar." });
+};
+
+// Helper to get active user organization and plan
+async function getUserActiveOrgAndPlan(userId: string, headerOrgId?: string): Promise<{ orgId: string | null; plan: string }> {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return { orgId: null, plan: "beta" };
+  }
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    let activeOrgId = headerOrgId;
+    if (!activeOrgId) {
+      const { data: profile, error: profErr } = await supabaseAdmin
+        .from("profiles")
+        .select("default_organization_id")
+        .eq("id", userId)
+        .maybeSingle();
+      if (profile && !profErr) {
+        activeOrgId = profile.default_organization_id;
+      }
+    }
+
+    if (!activeOrgId) {
+      return { orgId: null, plan: "beta" };
+    }
+
+    const { data: org, error: orgErr } = await supabaseAdmin
+      .from("organizations")
+      .select("plan")
+      .eq("id", activeOrgId)
+      .maybeSingle();
+
+    if (org && !orgErr) {
+      return { orgId: activeOrgId, plan: org.plan || "beta" };
+    }
+  } catch (err) {
+    console.error("Erro ao carregar plano/organização ativa no backend:", err);
+  }
+  return { orgId: null, plan: "beta" };
+}
+
+// Middleware to enforce Gemini AI plans access
+const requireGeminiPlan = async (req: any, res: any, next: any) => {
+  const headerOrgId = req.headers["x-organization-id"] || req.headers["X-Organization-Id"];
+  const { plan } = await getUserActiveOrgAndPlan(req.userId, headerOrgId);
+  
+  const allowedPlans = ["pro", "max", "pro_max"];
+  if (!allowedPlans.includes(plan)) {
+    return res.status(403).json({
+      error: `O recurso de Inteligência Artificial (Gemini) está disponível apenas nos planos Pro, Max e PRO MAX. Seu plano atual é ${plan.toUpperCase()}.`
+    });
+  }
   next();
 };
 
@@ -296,6 +351,7 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
         state,
         owner_id: req.userId,
         plan: targetPlan,
+        max_members: targetPlan === 'max' ? 5 : (targetPlan === 'pro_max' ? 30 : 1),
         subscription_status: 'active',
         subscription_started_at: new Date().toISOString()
       })
@@ -361,7 +417,7 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
 });
 
 // GENERATE DESCRIPTION
-app.post("/api/ai/generate-description", requireAuth, async (req, res) => {
+app.post("/api/ai/generate-description", requireAuth, requireGeminiPlan, async (req, res) => {
   if (!ai) {
     return res.status(400).json({
       error: "O serviço de inteligência artificial não está configurado. Por favor, configure GEMINI_API_KEY.",
@@ -450,7 +506,7 @@ Por favor, retorne APENAS um objeto JSON válido, sem markdown ou caracteres ext
 });
 
 // GENERATE WHATSAPP REMINDER MESSAGE
-app.post("/api/ai/generate-reminder", requireAuth, async (req, res) => {
+app.post("/api/ai/generate-reminder", requireAuth, requireGeminiPlan, async (req, res) => {
   if (!ai) {
     return res.status(400).json({
       error: "O serviço de inteligência artificial não está configurado. Por favor, configure GEMINI_API_KEY.",
@@ -524,7 +580,7 @@ Por favor, retorne APENAS um objeto JSON válido com a chave: "message".`;
 });
 
 // SUGGEST TASKS
-app.post("/api/ai/suggest-tasks", requireAuth, async (req, res) => {
+app.post("/api/ai/suggest-tasks", requireAuth, requireGeminiPlan, async (req, res) => {
   if (!ai) {
     return res.status(400).json({
       error: "O serviço de inteligência artificial não está configurado. Por favor, configure GEMINI_API_KEY.",
@@ -572,7 +628,7 @@ Formato da resposta: Retorne apenas um JSON válido no formato de lista com 3 it
 });
 
 // NEXT BEST ACTIONS
-app.post("/api/ai/next-best-actions", requireAuth, async (req, res) => {
+app.post("/api/ai/next-best-actions", requireAuth, requireGeminiPlan, async (req, res) => {
   try {
     const { clients = [], tasks = [], proposals = [], visits = [] } = req.body;
 

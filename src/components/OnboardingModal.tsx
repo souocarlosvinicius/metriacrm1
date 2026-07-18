@@ -405,10 +405,10 @@ export default function OnboardingModal({ user, onComplete }: OnboardingModalPro
                           <h4 className="font-bold text-xs text-amber-500">Tenho uma imobiliária/rede — Plano PRO MAX</h4>
                           <span className="text-[8px] font-bold text-white bg-amber-500 px-1.5 py-0.2 rounded uppercase tracking-wider shrink-0">Elite</span>
                         </div>
-                        <span className="text-[10px] font-bold text-amber-500 bg-amber-400/5 px-2 py-0.5 rounded-full border border-amber-400/10 shrink-0">R$ 999,00/mês</span>
+                        <span className="text-[10px] font-bold text-amber-500 bg-amber-400/5 px-2 py-0.5 rounded-full border border-amber-400/10 shrink-0">Consulte</span>
                       </div>
                       <p className="text-[11px] text-on-surface-variant mt-1 leading-relaxed">
-                        Tudo do Max + Gestão de Equipe Expandida (até 30 corretores), múltiplos gestores/admins, relatórios avançados de BI e painel gestor premium.
+                        Tudo do Max + Gestão de Equipe Expandida (até 99 corretores), múltiplos gestores/admins, relatórios avançados de BI e painel gestor premium.
                       </p>
                     </div>
                   </div>

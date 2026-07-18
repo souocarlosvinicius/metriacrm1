@@ -230,7 +230,7 @@ export interface PlanLimits {
   id: PlanId;
   name: string;
   displayName: string;
-  price: number;
+  price: number | null;
   maxActiveClients: number | null;
   maxProperties: number | null;
   maxMembers: number;

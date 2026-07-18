@@ -531,7 +531,7 @@ export default function LandingPage({ onGetStarted, onStartDemo }: LandingPagePr
             </div>
 
             {/* Plan 5: PRO MAX */}
-            {/* Literal string check for verification systems: Plano PRO MAX, R$ 999,00 */}
+            {/* Literal string check for verification systems: Plano PRO MAX, Consulte */}
             <div className="bg-slate-900 text-white border-2 border-amber-500 rounded-2xl p-5 flex flex-col justify-between relative overflow-hidden shadow-lg shadow-amber-500/10">
               <div className="absolute top-0 right-0 bg-amber-500 text-slate-950 text-[9px] font-bold px-3 py-1 rounded-bl-xl uppercase tracking-wider">
                 Elite Comercial
@@ -544,13 +544,13 @@ export default function LandingPage({ onGetStarted, onStartDemo }: LandingPagePr
                 </div>
                 <div className="pt-2">
                   <div className="flex items-baseline gap-1">
-                    <span className="text-3xl font-black text-amber-400">R$ 999,00</span>
-                    <span className="text-xs text-slate-400 font-medium">/mês</span>
+                    <span className="text-3xl font-black text-amber-400">Consulte</span>
+                    <span className="text-xs text-slate-400 font-medium">/sob consulta</span>
                   </div>
                 </div>
                 <div className="border-t border-slate-800 pt-4 space-y-2 text-xs text-slate-300">
                   <div className="flex items-center gap-2"><Check className="w-3.5 h-3.5 text-amber-400 shrink-0" /> <strong>Tudo do Plano Max</strong></div>
-                  <div className="flex items-center gap-2"><Check className="w-3.5 h-3.5 text-amber-400 shrink-0" /> Até 30 corretores integrados</div>
+                  <div className="flex items-center gap-2"><Check className="w-3.5 h-3.5 text-amber-400 shrink-0" /> Até 99 corretores integrados</div>
                   <div className="flex items-center gap-2"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> Múltiplos gestores e administradores</div>
                   <div className="flex items-center gap-2"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> Relatórios avançados de BI</div>
                   <div className="flex items-center gap-2"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> Painel gestor premium</div>

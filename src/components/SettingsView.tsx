@@ -1653,7 +1653,7 @@ export default function SettingsView({
                         {orgPlan === "start" && "R$ 39,90/mês"}
                         {orgPlan === "pro" && "R$ 79,90/mês"}
                         {orgPlan === "max" && "R$ 149,90/mês"}
-                        {orgPlan === "pro_max" && "R$ 999,00/mês"}
+                        {orgPlan === "pro_max" && "Consulte"}
                       </strong>
                     </div>
                   </div>
@@ -1899,11 +1899,11 @@ export default function SettingsView({
                         <p className="text-[10px] text-slate-400 leading-relaxed">Estrutura completa corporativa para grandes imobiliárias e redes.</p>
                       </div>
                       <div>
-                        <span className="text-xl font-extrabold text-amber-400 font-sans">R$ 999,00</span>
-                        <span className="text-[10px] text-slate-400 font-medium"> /mês</span>
+                        <span className="text-xl font-extrabold text-amber-400 font-sans">Consulte</span>
+                        <span className="text-[10px] text-slate-400 font-medium"> sob consulta</span>
                       </div>
                       <div className="border-t border-slate-800 pt-3.5 space-y-1.5 text-[11px] text-slate-300">
-                        <div className="flex items-center gap-1.5 font-bold text-amber-400"><Check className="w-3.5 h-3.5 text-amber-400 shrink-0" /> Até 30 Corretores inclusos</div>
+                        <div className="flex items-center gap-1.5 font-bold text-amber-400"><Check className="w-3.5 h-3.5 text-amber-400 shrink-0" /> Até 99 Corretores inclusos</div>
                         <div className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-amber-400 shrink-0" /> Múltiplos Gestores / Admins</div>
                         <div className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> Painel de Gestão Avançado</div>
                         <div className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> Relatórios Avançados & BI</div>

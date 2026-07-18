@@ -93,10 +93,10 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     id: "pro_max",
     name: "Plano PRO MAX",
     displayName: "PRO MAX",
-    price: 999.00,
+    price: null,
     maxActiveClients: null,
     maxProperties: null,
-    maxMembers: 30,
+    maxMembers: 99,
     hasFullPipeline: true,
     hasWhatsappTemplates: true,
     hasCalendarTasks: true,
@@ -131,6 +131,6 @@ export function getPlanDisplayName(planId: PlanId): string {
   return getPlanLimits(planId).displayName;
 }
 
-export function getPlanPrice(planId: PlanId): number {
+export function getPlanPrice(planId: PlanId): number | null {
   return getPlanLimits(planId).price;
 }

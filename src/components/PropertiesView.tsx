@@ -4,6 +4,7 @@ import { Search, Home, Plus, Bed, Square, Shield, X, Check, Save, Loader2, Dolla
 import { exportPropertiesToCSV } from "../utils/csvExport";
 import { exportPropertiesListToPDF } from "../utils/pdfExport";
 import { apiFetch } from "../api";
+import GuidedTour, { GuidedTourStep } from "./GuidedTour";
 
 interface PropertiesViewProps {
   properties: Property[];
@@ -63,6 +64,49 @@ export default function PropertiesView({ properties, clients, onAddProperty, onS
   const [selectedPriceRange, setSelectedPriceRange] = useState("Todos");
   const [showAddForm, setShowAddForm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const [isTourActive, setIsTourActive] = useState(false);
+
+  useEffect(() => {
+    const hasSeenTour = localStorage.getItem("metria_crm_properties_tour_seen");
+    if (!hasSeenTour) {
+      const timer = setTimeout(() => {
+        setIsTourActive(true);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, []);
+
+  const tourSteps: GuidedTourStep[] = [
+    {
+      targetId: "prop-tour-search",
+      title: "Busca Inteligente",
+      description: "Pesquise rapidamente por bairro, condomínio, código de identificação do imóvel ou características específicas.",
+      icon: Search,
+      badge: "Pesquisa"
+    },
+    {
+      targetId: "prop-tour-filters",
+      title: "Filtros Avançados",
+      description: "Filtre por finalidade (Venda/Aluguel/Temporada), tipo de imóvel (Chácara, Sítio, Casa, etc.) e faixa de preço.",
+      icon: Home,
+      badge: "Filtros"
+    },
+    {
+      targetId: "prop-tour-exports",
+      title: "Exportação de Carteira",
+      description: "Exporte a lista de imóveis filtrados em formato CSV para planilhas ou PDF de alta qualidade para impressão ou envio.",
+      icon: Download,
+      badge: "Exportações"
+    },
+    {
+      targetId: "prop-tour-btn-add",
+      title: "Cadastro de Imóveis",
+      description: "Clique no botão '+' para cadastrar novas propriedades com fotos, endereço, comissão do captador e muito mais.",
+      icon: Plus,
+      badge: "Cadastro"
+    }
+  ];
 
   // Reset price range filter when modality changes to avoid mismatched ranges
   useEffect(() => {
@@ -337,6 +381,7 @@ export default function PropertiesView({ properties, clients, onAddProperty, onS
                 <Search className="w-5 h-5 stroke-[2]" />
               </span>
               <input
+                id="prop-tour-search"
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -346,7 +391,7 @@ export default function PropertiesView({ properties, clients, onAddProperty, onS
             </div>
 
             {/* Quick Filters Group */}
-            <div className="bg-surface-container-lowest border border-outline-variant/40 rounded-2xl p-4.5 space-y-4 shadow-xs">
+            <div id="prop-tour-filters" className="bg-surface-container-lowest border border-outline-variant/40 rounded-2xl p-4.5 space-y-4 shadow-xs">
               {/* Modality Filter Chips */}
               <div className="flex flex-col gap-2">
                 <span className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Finalidade</span>
@@ -425,7 +470,7 @@ export default function PropertiesView({ properties, clients, onAddProperty, onS
           </div>
 
           {/* Properties Count & Export */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
+          <div id="prop-tour-exports" className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
             <span className="font-label-caps text-xs text-on-surface-variant tracking-wider font-bold">IMÓVEIS NA CARTEIRA</span>
             <div className="flex items-center gap-3">
               <span className="text-xs text-primary font-bold">{filteredProperties.length} imóveis</span>
@@ -615,6 +660,7 @@ export default function PropertiesView({ properties, clients, onAddProperty, onS
 
           {/* Floating Action Button for adding */}
           <button
+            id="prop-tour-btn-add"
             onClick={() => setShowAddForm(true)}
             className="fixed right-6 bottom-24 w-14 h-14 bg-primary text-on-primary rounded-full shadow-lg flex items-center justify-center hover:scale-105 active:scale-95 transition-all z-40 cursor-pointer border border-primary-container/20"
           >
@@ -1242,6 +1288,12 @@ export default function PropertiesView({ properties, clients, onAddProperty, onS
         </div>
       )}
 
+      <GuidedTour
+        steps={tourSteps}
+        isActive={isTourActive}
+        onClose={() => setIsTourActive(false)}
+        tourKey="metria_crm_properties_tour_seen"
+      />
     </div>
   );
 }

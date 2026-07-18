@@ -351,7 +351,7 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
         state,
         owner_id: req.userId,
         plan: targetPlan,
-        max_members: targetPlan === 'max' ? 5 : (targetPlan === 'pro_max' ? 30 : 1),
+        max_members: targetPlan === 'max' ? 5 : (targetPlan === 'pro_max' ? 99 : 1),
         subscription_status: 'active',
         subscription_started_at: new Date().toISOString()
       })

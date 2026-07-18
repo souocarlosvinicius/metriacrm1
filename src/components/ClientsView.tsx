@@ -4,6 +4,7 @@ import { getClientAlerts, getAlertBadgeStyles } from "../utils/alerts";
 import { Search, UserPlus, Mail, Phone, Plus, X, Save, Loader2, Check, AlertTriangle, Download, Upload, FileText, CheckCircle2 } from "lucide-react";
 import { exportClientsToCSV } from "../utils/csvExport";
 import { exportClientReportToPDF, exportClientsListToPDF } from "../utils/pdfExport";
+import GuidedTour, { GuidedTourStep } from "./GuidedTour";
 
 // Helper to parse CSV, handling quotes, commas and semicolons
 const parseCSV = (text: string) => {
@@ -135,6 +136,49 @@ export default function ClientsView({
   const [showAddForm, setShowAddForm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const [isTourActive, setIsTourActive] = useState(false);
+
+  useEffect(() => {
+    const hasSeenTour = localStorage.getItem("metria_crm_clients_tour_seen");
+    if (!hasSeenTour) {
+      const timer = setTimeout(() => {
+        setIsTourActive(true);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, []);
+
+  const tourSteps: GuidedTourStep[] = [
+    {
+      targetId: "client-tour-search",
+      title: "Busca Rápida de Clientes",
+      description: "Pesquise por nome, e-mail, telefone ou anotações internas para localizar qualquer contato da sua carteira.",
+      icon: Search,
+      badge: "Pesquisa"
+    },
+    {
+      targetId: "client-tour-filters",
+      title: "Filtros por Perfil",
+      description: "Classifique seus contatos por papel comercial (Lead, Comprador, Locatário, Investidor) ou identifique leads que estão 'Esfriando'.",
+      icon: UserPlus,
+      badge: "Filtros"
+    },
+    {
+      targetId: "client-tour-actions",
+      title: "Importação e Exportação",
+      description: "Importe contatos em massa via planilha CSV, ou exporte sua carteira em CSV ou relatórios PDF completos.",
+      icon: Upload,
+      badge: "Ferramentas"
+    },
+    {
+      targetId: "client-tour-btn-add",
+      title: "Cadastrar Novo Cliente",
+      description: "Utilize este botão para adicionar manualmente novos leads e especificar preferências de compra/locação, orçamento e endereço.",
+      icon: Plus,
+      badge: "Cadastro"
+    }
+  ];
 
   // CSV Import state variables
   const [showImportModal, setShowImportModal] = useState(false);
@@ -507,6 +551,7 @@ export default function ClientsView({
                 <Search className="w-5 h-5 stroke-[2]" />
               </span>
               <input
+                id="client-tour-search"
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -516,7 +561,7 @@ export default function ClientsView({
             </div>
 
             {/* Profile Type Filter Chips */}
-            <div className="flex gap-2 overflow-x-auto pb-1">
+            <div id="client-tour-filters" className="flex gap-2 overflow-x-auto pb-1">
               {["Todos", "Esfriando", "Lead", "Comprador", "Vendedor", "Locador", "Locatário", "Investidor"].map((tab) => {
                 const isActive = filter === tab;
                 return (
@@ -543,7 +588,7 @@ export default function ClientsView({
               <span className="font-label-caps text-xs text-on-surface-variant tracking-wider font-bold">LEADS E CLIENTES CADASTRADOS</span>
               <div className="flex items-center gap-3">
                 <span className="text-xs text-primary font-bold">{filteredClients.length} contatos</span>
-                <div className="flex gap-2">
+                <div id="client-tour-actions" className="flex gap-2">
                   <button
                     onClick={() => setShowImportModal(true)}
                     className="flex items-center gap-1 px-2.5 py-1 text-[11px] bg-[#004d3e]/10 hover:bg-[#004d3e]/20 text-[#004d3e] border border-[#004d3e]/20 rounded-lg font-bold transition-all cursor-pointer shadow-sm active:scale-95"
@@ -722,6 +767,7 @@ export default function ClientsView({
 
           {/* Floating Action Button for adding client */}
           <button
+            id="client-tour-btn-add"
             onClick={() => setShowAddForm(true)}
             className="fixed right-6 bottom-24 w-14 h-14 bg-primary text-on-primary rounded-full shadow-lg flex items-center justify-center hover:scale-105 active:scale-95 transition-all z-40 cursor-pointer border border-primary-container/20"
           >
@@ -1359,6 +1405,12 @@ export default function ClientsView({
         </div>
       )}
 
+      <GuidedTour
+        steps={tourSteps}
+        isActive={isTourActive}
+        onClose={() => setIsTourActive(false)}
+        tourKey="metria_crm_clients_tour_seen"
+      />
     </div>
   );
 }

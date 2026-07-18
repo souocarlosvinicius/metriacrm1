@@ -1,10 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   Plus, Edit, Trash2, Calendar, DollarSign, Handshake, Eye, Clock, X, Check, 
   AlertCircle, ClipboardList, User, Home, ArrowUpRight, Search, FileText, CheckCircle
 } from "lucide-react";
 import { Proposal, Visit, Client, Property, User as LoggedUser } from "../types";
+import GuidedTour, { GuidedTourStep } from "./GuidedTour";
 
 interface TransactionsViewProps {
   proposals: Proposal[];
@@ -35,6 +36,49 @@ export default function TransactionsView({
 }: TransactionsViewProps) {
   const [subTab, setSubTab] = useState<"proposals" | "visits">("proposals");
   const [searchQuery, setSearchQuery] = useState("");
+
+  const [isTourActive, setIsTourActive] = useState(false);
+
+  useEffect(() => {
+    const hasSeenTour = localStorage.getItem("metria_crm_proposals_tour_seen");
+    if (!hasSeenTour) {
+      const timer = setTimeout(() => {
+        setIsTourActive(true);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, []);
+
+  const tourSteps: GuidedTourStep[] = [
+    {
+      targetId: "proposal-tour-tabs",
+      title: "Abas de Negociação",
+      description: "Alterne facilmente entre a gestão de Propostas de Venda/Aluguel e as Visitas Agendadas.",
+      icon: Handshake,
+      badge: "Abas"
+    },
+    {
+      targetId: "proposal-tour-search",
+      title: "Busca Rápida",
+      description: "Filtre propostas ou visitas digitando o nome do cliente, o imóvel ou observações para encontrar o que precisa num piscar de olhos.",
+      icon: Search,
+      badge: "Pesquisa"
+    },
+    {
+      targetId: "proposal-tour-btn-add",
+      title: "Registrar Proposta ou Visita",
+      description: "Envie uma nova proposta ou agende uma visita clicando aqui. Selecione o cliente e o imóvel correspondentes.",
+      icon: Plus,
+      badge: "Novo Registro"
+    },
+    {
+      targetId: "proposal-tour-cards",
+      title: "Controle de Status",
+      description: "Monitore o status (Pendente, Em Análise, Aceita ou Recusada) de cada proposta e as ações de acompanhamento futuras.",
+      icon: Check,
+      badge: "Acompanhamento"
+    }
+  ];
 
   // Modals controllers
   const [showProposalModal, setShowProposalModal] = useState(false);
@@ -208,6 +252,7 @@ export default function TransactionsView({
 
         {/* Action Button */}
         <button
+          id="proposal-tour-btn-add"
           onClick={subTab === "proposals" ? handleOpenNewProposal : handleOpenNewVisit}
           className="self-start md:self-auto px-5 py-2.5 bg-primary text-on-primary rounded-xl font-bold text-xs flex items-center gap-2 hover:opacity-90 transition-all shadow-md active:scale-95 cursor-pointer"
         >
@@ -217,7 +262,7 @@ export default function TransactionsView({
       </div>
 
       {/* Sub-tab Selection Rail */}
-      <div className="flex justify-between items-center bg-surface-container-low p-1.5 rounded-2xl border border-outline-variant/30 shadow-sm">
+      <div id="proposal-tour-tabs" className="flex justify-between items-center bg-surface-container-low p-1.5 rounded-2xl border border-outline-variant/30 shadow-sm">
         <div className="flex gap-2">
           <button
             onClick={() => { setSubTab("proposals"); setSearchQuery(""); }}
@@ -247,6 +292,7 @@ export default function TransactionsView({
         <div className="relative max-w-xs shrink-0 hidden sm:block">
           <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/50" />
           <input
+            id="proposal-tour-search"
             type="text"
             placeholder="Buscar..."
             value={searchQuery}
@@ -261,7 +307,7 @@ export default function TransactionsView({
         {subTab === "proposals" ? (
           /* PROPOSALS LIST */
           filteredProposals.length === 0 ? (
-            <div className="flex flex-col items-center justify-center text-center py-20 px-6 text-on-surface-variant bg-surface-container-low rounded-3xl border border-dashed border-outline-variant/60 shadow-sm animate-in fade-in duration-300 max-w-2xl mx-auto my-4">
+            <div id="proposal-tour-cards" className="flex flex-col items-center justify-center text-center py-20 px-6 text-on-surface-variant bg-surface-container-low rounded-3xl border border-dashed border-outline-variant/60 shadow-sm animate-in fade-in duration-300 max-w-2xl mx-auto my-4">
               <div className="w-16 h-16 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-5 shadow-inner">
                 <Handshake className="w-8 h-8 stroke-[1.5]" />
               </div>
@@ -280,7 +326,7 @@ export default function TransactionsView({
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div id="proposal-tour-cards" className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {filteredProposals.map((prop) => {
                 const pId = prop.id || prop._id || "";
                 return (
@@ -734,6 +780,12 @@ export default function TransactionsView({
         )}
       </AnimatePresence>
 
+      <GuidedTour
+        steps={tourSteps}
+        isActive={isTourActive}
+        onClose={() => setIsTourActive(false)}
+        tourKey="metria_crm_proposals_tour_seen"
+      />
     </div>
   );
 }

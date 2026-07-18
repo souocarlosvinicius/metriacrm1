@@ -76,13 +76,13 @@ end $$;
 update public.organizations
 set max_members = case
   when plan = 'max' then 5
-  when plan = 'pro_max' then 30
+  when plan = 'pro_max' then 99
   else 1
 end
 where max_members is null
    or max_members < case
       when plan = 'max' then 5
-      when plan = 'pro_max' then 30
+      when plan = 'pro_max' then 99
       else 1
    end;
 
@@ -96,9 +96,9 @@ BEGIN
       NEW.max_members := 5;
     END IF;
   ELSIF NEW.plan = 'pro_max' THEN
-    NEW.max_members := COALESCE(NEW.max_members, 30);
-    IF NEW.max_members > 30 THEN
-      NEW.max_members := 30;
+    NEW.max_members := COALESCE(NEW.max_members, 99);
+    IF NEW.max_members > 99 THEN
+      NEW.max_members := 99;
     END IF;
   ELSE
     NEW.max_members := 1;

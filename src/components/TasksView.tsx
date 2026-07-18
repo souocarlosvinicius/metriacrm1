@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Task, Client, Property } from "../types";
+import { Task, Client, Property, User as UserType } from "../types";
 import { apiFetch } from "../api";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -76,8 +76,20 @@ function generateDefaultReminder(
   taskType: string,
   taskDate: string,
   taskTime: string,
-  propertyTitle?: string
+  propertyTitle?: string,
+  currentUser?: UserType
 ): string {
+  if (currentUser?.messageTemplates?.reminderTemplate) {
+    let msg = currentUser.messageTemplates.reminderTemplate;
+    msg = msg.replace(/\{\{nome\}\}/g, clientName || "Cliente");
+    msg = msg.replace(/\{\{tarefa\}\}/g, taskType || "compromisso");
+    msg = msg.replace(/\{\{data\}\}/g, taskDate ? taskDate.split("-").reverse().join("/") : "amanhã");
+    msg = msg.replace(/\{\{hora\}\}/g, taskTime || "a definir");
+    msg = msg.replace(/\{\{corretor\}\}/g, currentUser.name || "Corretor");
+    msg = msg.replace(/\{\{imobiliaria\}\}/g, currentUser.commercialName || "Imobiliária");
+    return msg;
+  }
+
   const formattedDate = taskDate
     ? taskDate.split("-").reverse().join("/")
     : "amanhã";
@@ -90,6 +102,7 @@ function generateDefaultReminder(
 }
 
 interface TasksViewProps {
+  currentUser?: UserType;
   tasks: Task[];
   clients?: Client[];
   properties?: Property[];
@@ -106,6 +119,7 @@ interface TasksViewProps {
 type TaskTab = "hoje" | "atrasadas" | "proximos_7" | "concluidas";
 
 export default function TasksView({
+  currentUser,
   tasks = [],
   clients = [],
   properties = [],
@@ -173,11 +187,12 @@ export default function TasksView({
         type,
         selectedDate,
         time,
-        propertyTitle
+        propertyTitle,
+        currentUser
       );
       setReminderMessage(generated);
     }
-  }, [reminderActive, clientName, type, selectedDate, time, propertyTitle, isMessageManuallyEdited, showAddForm]);
+  }, [reminderActive, clientName, type, selectedDate, time, propertyTitle, isMessageManuallyEdited, showAddForm, currentUser]);
 
   // Effect to handle pre-filled client redirect from dashboard
   useEffect(() => {
@@ -310,7 +325,7 @@ export default function TasksView({
 
   const handleOpenReminderModal = (task: Task) => {
     setActiveReminderTask(task);
-    setModalReminderMessage(task.reminderMessage || generateDefaultReminder(task.clientName, task.type, task.date, task.time, task.propertyTitle));
+    setModalReminderMessage(task.reminderMessage || generateDefaultReminder(task.clientName, task.type, task.date, task.time, task.propertyTitle, currentUser));
   };
 
   const handleEnhanceMessageWithAI = async () => {

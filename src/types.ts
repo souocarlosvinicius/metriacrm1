@@ -182,6 +182,11 @@ export interface MessageTemplates {
   confirmacaoVisita?: string;
   posVisita?: string;
   proposta?: string;
+  reminderPhone?: string;
+  reminderEnabled?: boolean;
+  reminderTemplate?: string;
+  reminderTimeOffset?: string;
+  reminderApiProvider?: string;
 }
 
 export interface User {

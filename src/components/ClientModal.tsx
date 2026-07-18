@@ -3,10 +3,11 @@ import { motion } from "motion/react";
 import { Client, User as DbUser, HistoryEntry, Task, Proposal, Visit, Property } from "../types";
 import { getClientAlerts, getAlertBadgeStyles } from "../utils/alerts";
 import { getMatchingProperties } from "../utils/matching";
+import { exportClientReportToPDF } from "../utils/pdfExport";
 import { 
   X, User, Phone, Mail, Award, Landmark, Trash2, Edit, Save, Loader2, Check, Cake, MapPin,
   History, Plus, MessageSquare, Calendar, DollarSign, CheckCircle2, AlertCircle, Clock, PlusCircle,
-  AlertTriangle, Sparkles
+  AlertTriangle, Sparkles, Download
 } from "lucide-react";
 
 interface ClientModalProps {
@@ -790,6 +791,17 @@ Gostaria de agendar uma visita ou receber mais fotos deste imóvel?`;
                       Excluir Cliente
                     </>
                   )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportClientReportToPDF(client, proposals, visits)}
+                  disabled={isDeleting || isSaving}
+                  className="mr-auto px-4 py-2.5 bg-surface-container-high hover:bg-surface-container-highest hover:text-primary text-on-surface-variant border border-outline-variant/30 rounded-xl font-label-md font-bold transition-all flex items-center gap-2 shadow-sm disabled:opacity-50 cursor-pointer"
+                  title="Exportar Relatório Completo do Cliente em PDF"
+                >
+                  <Download className="w-4 h-4 text-primary" />
+                  <span className="hidden sm:inline">Exportar Relatório PDF</span>
+                  <span className="sm:hidden">Relatório PDF</span>
                 </button>
                 <button
                   type="button"

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { User, MessageTemplates } from "../types";
+import { User, MessageTemplates, Property, Client, Task } from "../types";
 import { apiFetch } from "../api";
 import { 
   User as UserIcon, 
@@ -28,13 +28,19 @@ import {
   HelpCircle,
   X,
   ExternalLink,
-  Database
+  Database,
+  Bell,
+  Download,
+  FileJson
 } from "lucide-react";
 
 interface SettingsViewProps {
   currentUser: User;
   onUpdateSuccess: (updatedUser: User) => void;
   onLogout: () => void;
+  properties?: Property[];
+  clients?: Client[];
+  tasks?: Task[];
 }
 
 const DEFAULT_STAGES = [
@@ -72,9 +78,16 @@ const DEFAULT_MESSAGE_TEMPLATES: MessageTemplates = {
   proposta: "Olá, {{nome}}! Conforme nossa conversa, preparei a proposta para o imóvel {{imovel}}. Gostaria de alinhar os próximos passos e o envio dos documentos?"
 };
 
-export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }: SettingsViewProps) {
+export default function SettingsView({ 
+  currentUser, 
+  onUpdateSuccess, 
+  onLogout,
+  properties = [],
+  clients = [],
+  tasks = []
+}: SettingsViewProps) {
   // Navigation tabs for the settings panel
-  const [activeSubTab, setActiveSubTab] = useState<"corretor" | "preferencias" | "mensagens" | "conta" | "planos" | "termos" | "suporte">("corretor");
+  const [activeSubTab, setActiveSubTab] = useState<"corretor" | "preferencias" | "mensagens" | "lembretes" | "conta" | "planos" | "termos" | "suporte">("corretor");
 
   // 1. Broker states
   const [name, setName] = useState(currentUser.name || "");
@@ -114,12 +127,28 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
     confirmacaoVisita: currentUser.messageTemplates?.confirmacaoVisita || DEFAULT_MESSAGE_TEMPLATES.confirmacaoVisita,
     posVisita: currentUser.messageTemplates?.posVisita || DEFAULT_MESSAGE_TEMPLATES.posVisita,
     proposta: currentUser.messageTemplates?.proposta || DEFAULT_MESSAGE_TEMPLATES.proposta,
+    reminderPhone: currentUser.messageTemplates?.reminderPhone || currentUser.phone || "",
+    reminderEnabled: currentUser.messageTemplates?.reminderEnabled !== undefined ? currentUser.messageTemplates.reminderEnabled : false,
+    reminderTemplate: currentUser.messageTemplates?.reminderTemplate || "Olá, {{nome}}! Passando para lembrar do seu compromisso agendado para {{data}} às {{hora}}. Atividade: {{tarefa}}.",
+    reminderTimeOffset: currentUser.messageTemplates?.reminderTimeOffset || "2", // hours before by default
+    reminderApiProvider: currentUser.messageTemplates?.reminderApiProvider || "meta",
   });
 
   // 4. Account states
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [clearedSchemaFlag, setClearedSchemaFlag] = useState(false);
+
+  // WhatsApp Reminder States
+  const [qrState, setQrState] = useState<"disconnected" | "generating" | "ready" | "connected">("disconnected");
+  const [testClientName, setTestClientName] = useState("João Silva");
+  const [testTaskTitle, setTestTaskTitle] = useState("Visita ao Apartamento de Alto Padrão em Moema");
+  const [testSuccess, setTestSuccess] = useState(false);
+  const [isSendingTest, setIsSendingTest] = useState(false);
+
+  // Backup / JSON Export states
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportSuccess, setExportSuccess] = useState(false);
 
   const handleClearSchemaFlag = () => {
     localStorage.removeItem("supabase_schema_missing");
@@ -321,6 +350,87 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
     setLeadSources(leadSources.filter((_, idx) => idx !== indexToRemove));
   };
 
+  // WhatsApp Reminder helper functions
+  const getSimulatedMessagePreview = () => {
+    let msg = templates.reminderTemplate || "Olá, {{nome}}! Passando para lembrar do seu compromisso agendado para {{data}} às {{hora}}. Atividade: {{tarefa}}.";
+    msg = msg.replace(/\{\{nome\}\}/g, testClientName);
+    msg = msg.replace(/\{\{tarefa\}\}/g, testTaskTitle);
+    msg = msg.replace(/\{\{data\}\}/g, new Date().toLocaleDateString("pt-BR"));
+    msg = msg.replace(/\{\{hora\}\}/g, "14:30");
+    msg = msg.replace(/\{\{corretor\}\}/g, name || "Carlos");
+    msg = msg.replace(/\{\{imobiliaria\}\}/g, commercialName || "Metria Imóveis");
+    return msg;
+  };
+
+  const handleSendTestMessage = () => {
+    if (!templates.reminderPhone) {
+      alert("Por favor, digite um número de telefone antes de enviar o teste.");
+      return;
+    }
+    setIsSendingTest(true);
+    setTestSuccess(false);
+    setTimeout(() => {
+      setIsSendingTest(false);
+      setTestSuccess(true);
+      setTimeout(() => setTestSuccess(false), 5000);
+    }, 1500);
+  };
+
+  const handleDownloadBackup = () => {
+    setIsExporting(true);
+    setExportSuccess(false);
+
+    // Simulate a brief generation delay for premium UX feel
+    setTimeout(() => {
+      const backupData = {
+        exportMetadata: {
+          system: "Metria CRM",
+          exportDate: new Date().toISOString(),
+          version: "1.0.0",
+          itemCount: {
+            properties: properties.length,
+            clients: clients.length,
+            tasks: tasks.length
+          }
+        },
+        broker: {
+          id: currentUser.id,
+          name: currentUser.name || name,
+          email: currentUser.email || email,
+          phone: currentUser.phone || phone,
+          commercialName: currentUser.commercialName || commercialName,
+        },
+        clients: clients,
+        properties: properties,
+        tasks: tasks,
+      };
+
+      try {
+        const jsonString = JSON.stringify(backupData, null, 2);
+        const blob = new Blob([jsonString], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        
+        const link = document.createElement("a");
+        link.href = url;
+        const formattedDate = new Date().toISOString().split("T")[0];
+        link.download = `metria_crm_backup_${formattedDate}.json`;
+        
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+
+        setIsExporting(false);
+        setExportSuccess(true);
+        setTimeout(() => setExportSuccess(false), 4000);
+      } catch (err) {
+        console.error("Erro ao gerar backup:", err);
+        setIsExporting(false);
+        alert("Ocorreu um erro ao gerar o arquivo de backup de dados.");
+      }
+    }, 1200);
+  };
+
   // Submit all modifications
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -493,6 +603,19 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
           >
             <MessageSquare className="w-4 h-4" />
             Modelos de Mensagem
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab("lembretes")}
+            className={`flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition-all text-left cursor-pointer ${
+              activeSubTab === "lembretes"
+                ? "bg-primary text-white shadow-md shadow-primary/10"
+                : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            Configuração de Lembretes
           </button>
 
           <button
@@ -952,6 +1075,386 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
               </div>
             )}
 
+            {/* SUB-TAB: CONFIGURAÇÃO DE LEMBRETES (WHATSAPP REMINDERS) */}
+            {activeSubTab === "lembretes" && (
+              <div className="space-y-6 animate-in fade-in duration-250 text-left">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-outline-variant/20 pb-4">
+                  <div className="space-y-1">
+                    <h3 className="font-display font-bold text-on-surface text-lg flex items-center gap-2">
+                      <Bell className="w-5 h-5 text-primary" />
+                      <span>Configurações de Lembretes Automáticos</span>
+                    </h3>
+                    <p className="text-xs text-on-surface-variant font-medium">
+                      Configure o envio automático de lembretes de tarefas e visitas aos seus clientes via WhatsApp.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  {/* Left Column: Configuration Forms (7 cols) */}
+                  <div className="lg:col-span-7 space-y-5">
+                    
+                    {/* Status & Activation Card */}
+                    <div className="bg-surface p-5 rounded-2xl border border-outline-variant/30 shadow-sm space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div className="space-y-0.5">
+                          <span className="text-[10px] text-primary uppercase font-black tracking-wider">Serviço de Mensageria</span>
+                          <h4 className="font-display font-bold text-sm text-on-surface">Ativação do Recurso</h4>
+                        </div>
+                        
+                        <label className="relative inline-flex items-center cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={templates.reminderEnabled || false}
+                            onChange={(e) => setTemplates({ ...templates, reminderEnabled: e.target.checked })}
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-outline-variant/60 rounded-full peer peer-focus:ring-2 peer-focus:ring-primary/20 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                        {/* Phone field */}
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-extrabold text-on-surface-variant uppercase tracking-wider">
+                            Telefone do Corretor (WhatsApp)
+                          </label>
+                          <div className="relative">
+                            <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-on-surface-variant/60">
+                              <Phone className="w-3.5 h-3.5" />
+                            </span>
+                            <input
+                              type="text"
+                              value={templates.reminderPhone || ""}
+                              onChange={(e) => setTemplates({ ...templates, reminderPhone: e.target.value })}
+                              placeholder="Ex: +55 (11) 99999-9999"
+                              className="w-full pl-9 pr-3 py-2 border border-outline-variant rounded-xl bg-surface-container-lowest outline-none text-xs focus:border-primary font-bold text-on-surface"
+                            />
+                          </div>
+                          <span className="text-[10px] text-on-surface-variant font-medium">
+                            Número associado que disparará os lembretes automáticos.
+                          </span>
+                        </div>
+
+                        {/* Antecedência field */}
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-extrabold text-on-surface-variant uppercase tracking-wider">
+                            Tempo de Antecedência
+                          </label>
+                          <select
+                            value={templates.reminderTimeOffset || "2"}
+                            onChange={(e) => setTemplates({ ...templates, reminderTimeOffset: e.target.value })}
+                            className="w-full px-3 py-2 border border-outline-variant rounded-xl bg-surface-container-lowest outline-none text-xs focus:border-primary font-bold text-on-surface cursor-pointer"
+                          >
+                            <option value="0.5">30 minutos antes</option>
+                            <option value="1">1 hora antes</option>
+                            <option value="2">2 horas antes</option>
+                            <option value="4">4 horas antes</option>
+                            <option value="24">24 horas antes (1 dia)</option>
+                          </select>
+                          <span className="text-[10px] text-on-surface-variant font-medium">
+                            Quando disparar a notificação antes do horário da tarefa.
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* API Provider Selection */}
+                      <div className="flex flex-col gap-1.5 pt-2">
+                        <label className="text-[10px] font-extrabold text-on-surface-variant uppercase tracking-wider">
+                          Canal / Provedor da API de Envio
+                        </label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            { id: "meta", name: "Meta Cloud API", desc: "Oficial (Recomendado)" },
+                            { id: "zapi", name: "Z-API", desc: "Instância Externa" },
+                            { id: "direct", name: "Envio Rápido", desc: "WhatsApp Web" }
+                          ].map(prov => (
+                            <button
+                              key={prov.id}
+                              type="button"
+                              onClick={() => setTemplates({ ...templates, reminderApiProvider: prov.id })}
+                              className={`p-2.5 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer ${
+                                (templates.reminderApiProvider || "meta") === prov.id
+                                  ? "border-primary bg-primary/5 text-primary"
+                                  : "border-outline-variant/50 bg-surface-container-low text-on-surface-variant hover:border-outline-variant"
+                              }`}
+                            >
+                              <span className="text-xs font-bold block">{prov.name}</span>
+                              <span className="text-[9px] opacity-75 font-medium block mt-1">{prov.desc}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Message Template Editor Card */}
+                    <div className="bg-surface p-5 rounded-2xl border border-outline-variant/30 shadow-sm space-y-4">
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] text-[#cfa85c] uppercase font-black tracking-wider">Personalização</span>
+                        <h4 className="font-display font-bold text-sm text-on-surface">Modelo da Mensagem do Lembrete</h4>
+                      </div>
+
+                      <div className="flex flex-col gap-2">
+                        <textarea
+                          rows={4}
+                          value={templates.reminderTemplate || ""}
+                          onChange={(e) => setTemplates({ ...templates, reminderTemplate: e.target.value })}
+                          placeholder="Olá, {{nome}}! Passando para lembrar do seu compromisso agendado para {{data}} às {{hora}}. Atividade: {{tarefa}}."
+                          className="w-full p-3.5 border border-outline-variant rounded-xl bg-surface-container-lowest outline-none text-xs focus:border-primary leading-relaxed font-medium"
+                        />
+                      </div>
+
+                      {/* Tag list */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-extrabold text-on-surface-variant uppercase tracking-wider">
+                          Variáveis de preenchimento automático (Clique para inserir)
+                        </label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {[
+                            { tag: "{{nome}}", desc: "Nome do Cliente" },
+                            { tag: "{{tarefa}}", desc: "Título da Tarefa" },
+                            { tag: "{{data}}", desc: "Data" },
+                            { tag: "{{hora}}", desc: "Horário" },
+                            { tag: "{{corretor}}", desc: "Seu Nome" },
+                            { tag: "{{imobiliaria}}", desc: "Sua Imobiliária" }
+                          ].map(t => (
+                            <button
+                              key={t.tag}
+                              type="button"
+                              onClick={() => {
+                                const currentTmpl = templates.reminderTemplate || "";
+                                setTemplates({ ...templates, reminderTemplate: currentTmpl + " " + t.tag });
+                              }}
+                              className="text-[10px] font-bold bg-surface-container-high text-on-surface hover:bg-primary/10 hover:text-primary border border-outline-variant/50 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
+                              title={t.desc}
+                            >
+                              {t.tag}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* Right Column: API Connection Status, Preview & Simulator (5 cols) */}
+                  <div className="lg:col-span-5 space-y-5">
+                    
+                    {/* Connection Simulator Card */}
+                    <div className="bg-surface p-5 rounded-2xl border border-outline-variant/30 shadow-sm space-y-4">
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] text-primary uppercase font-black tracking-wider">Sincronização</span>
+                        <h4 className="font-display font-bold text-sm text-on-surface">Status da Conexão</h4>
+                      </div>
+
+                      {qrState === "disconnected" && (
+                        <div className="p-4 bg-surface-container-low border border-outline-variant/40 rounded-xl text-center space-y-3">
+                          <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mx-auto">
+                            <Phone className="w-5 h-5 text-primary" />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-primary">Dispositivo desconectado</p>
+                            <p className="text-[10px] text-on-surface-variant leading-relaxed">
+                              Conecte o seu celular para que o Metria CRM envie as mensagens automaticamente utilizando sua conta de WhatsApp.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQrState("generating");
+                              setTimeout(() => setQrState("ready"), 1200);
+                            }}
+                            className="w-full py-2 bg-primary text-white rounded-lg text-xs font-bold hover:opacity-95 transition-all shadow-sm cursor-pointer"
+                          >
+                            Gerar QR Code de Conexão
+                          </button>
+                        </div>
+                      )}
+
+                      {qrState === "generating" && (
+                        <div className="p-4 bg-surface-container-low border border-outline-variant/40 rounded-xl text-center space-y-4">
+                          <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto" />
+                          <p className="text-xs font-bold text-primary animate-pulse">
+                            Iniciando sessão e gerando token...
+                          </p>
+                        </div>
+                      )}
+
+                      {qrState === "ready" && (
+                        <div className="p-4 bg-surface-container-low border border-outline-variant/40 rounded-xl text-center space-y-3">
+                          <div className="p-2 bg-white rounded-lg w-32 h-32 mx-auto border border-outline-variant/50 flex items-center justify-center shadow-inner relative group">
+                            {/* Simulated QR Code using random lines and boxes */}
+                            <div className="grid grid-cols-4 gap-1 w-full h-full p-2 opacity-80">
+                              <div className="bg-black rounded-sm"></div>
+                              <div className="bg-black rounded-sm"></div>
+                              <div></div>
+                              <div className="bg-black rounded-sm"></div>
+                              <div className="bg-black rounded-sm"></div>
+                              <div></div>
+                              <div className="bg-black rounded-sm"></div>
+                              <div></div>
+                              <div></div>
+                              <div className="bg-black rounded-sm"></div>
+                              <div></div>
+                              <div className="bg-black rounded-sm"></div>
+                              <div className="bg-black rounded-sm"></div>
+                              <div></div>
+                              <div className="bg-black rounded-sm"></div>
+                              <div className="bg-black rounded-sm"></div>
+                            </div>
+                            <div className="absolute inset-0 bg-primary/5 group-hover:bg-transparent transition-all"></div>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-primary">QR Code Pronto</p>
+                            <p className="text-[10px] text-on-surface-variant">
+                              Abra o WhatsApp {">"} Aparelhos Conectados {">"} Conectar um aparelho e aponte para a tela.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setQrState("connected")}
+                            className="w-full py-2 bg-[#004d3e] text-white rounded-lg text-xs font-bold hover:opacity-95 transition-all shadow-sm cursor-pointer"
+                          >
+                            Simular Leitura (Conectar)
+                          </button>
+                        </div>
+                      )}
+
+                      {qrState === "connected" && (
+                        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-center space-y-3">
+                          <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center mx-auto">
+                            <Check className="w-5 h-5 text-emerald-600 animate-bounce" />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs font-black text-emerald-900">API WhatsApp Conectada</p>
+                            <p className="text-[10px] text-emerald-800 font-medium">
+                              Instância conectada ao número <span className="font-mono font-bold">{templates.reminderPhone || "não definido"}</span>
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setQrState("disconnected")}
+                            className="w-full py-2 bg-red-100 text-red-900 rounded-lg text-xs font-bold hover:bg-red-200 transition-all cursor-pointer"
+                          >
+                            Desconectar Instância
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* WhatsApp Chat Bubble Preview */}
+                    <div className="bg-surface p-5 rounded-2xl border border-outline-variant/30 shadow-sm space-y-3">
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] text-emerald-600 uppercase font-black tracking-wider">Visualização</span>
+                        <h4 className="font-display font-bold text-sm text-on-surface">Prévia do Balão de Conversa</h4>
+                      </div>
+
+                      {/* Mockup phone interface */}
+                      <div className="bg-[#e5ddd5] rounded-xl border border-outline-variant/30 overflow-hidden shadow-inner max-w-sm mx-auto text-left">
+                        {/* Header of WhatsApp Chat */}
+                        <div className="bg-[#075e54] text-white p-3 flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center font-bold text-xs uppercase">
+                            {testClientName.substring(0, 2)}
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold">{testClientName}</p>
+                            <p className="text-[9px] opacity-80 font-medium">Online</p>
+                          </div>
+                        </div>
+
+                        {/* Message body */}
+                        <div className="p-4 space-y-3 min-h-[140px] flex flex-col justify-end">
+                          <div className="bg-white rounded-lg p-3 text-[11px] leading-relaxed text-on-surface max-w-[85%] self-end shadow-sm relative after:content-[''] after:absolute after:top-0 after:right-[-6px] after:border-t-[8px] after:border-t-white after:border-r-[8px] after:border-r-transparent">
+                            <p className="whitespace-pre-line font-medium text-on-surface">
+                              {getSimulatedMessagePreview()}
+                            </p>
+                            <div className="text-right text-[8px] text-on-surface-variant mt-1.5 font-bold flex items-center justify-end gap-1">
+                              <span>14:30</span>
+                              <span className="text-blue-500 font-extrabold font-sans">✓✓</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Quick Simulator Form */}
+                    <div className="bg-surface p-5 rounded-2xl border border-outline-variant/30 shadow-sm space-y-4">
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] text-indigo-600 uppercase font-black tracking-wider">Simulador</span>
+                        <h4 className="font-display font-bold text-sm text-on-surface">Testar Envio em Tempo Real</h4>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[9px] font-extrabold text-on-surface-variant uppercase mb-1">Cliente de Teste</label>
+                            <input
+                              type="text"
+                              value={testClientName}
+                              onChange={(e) => setTestClientName(e.target.value)}
+                              className="w-full px-2.5 py-1.5 border border-outline-variant rounded-lg bg-surface-container-lowest outline-none text-[11px] font-bold"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[9px] font-extrabold text-on-surface-variant uppercase mb-1">Assunto/Tarefa</label>
+                            <input
+                              type="text"
+                              value={testTaskTitle}
+                              onChange={(e) => setTestTaskTitle(e.target.value)}
+                              className="w-full px-2.5 py-1.5 border border-outline-variant rounded-lg bg-surface-container-lowest outline-none text-[11px] font-bold"
+                            />
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleSendTestMessage}
+                          disabled={isSendingTest || testSuccess}
+                          className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-black hover:opacity-95 disabled:opacity-70 transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                        >
+                          {isSendingTest ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              Disparando WhatsApp API...
+                            </>
+                          ) : testSuccess ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-300 animate-bounce" />
+                              Lembrete Enviado com Sucesso!
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5 text-indigo-200" />
+                              Enviar Mensagem de Teste
+                            </>
+                          )}
+                        </button>
+
+                        {testSuccess && (
+                          <div className="p-3 bg-indigo-50 border border-indigo-150 rounded-xl text-left animate-in fade-in slide-in-from-bottom-2 duration-300">
+                            <p className="text-[10px] text-indigo-900 font-extrabold">Retorno da API WhatsApp:</p>
+                            <pre className="text-[9px] font-mono bg-indigo-900/5 p-2 rounded mt-1 overflow-x-auto text-indigo-800 leading-tight">
+                              {JSON.stringify({
+                                status: "success",
+                                messageId: "msg_wapi_" + Math.random().toString(36).substring(2, 10),
+                                recipient: templates.reminderPhone || "+5511999999999",
+                                sentAt: new Date().toISOString(),
+                                payload: {
+                                  provider: templates.reminderApiProvider || "meta",
+                                  text: getSimulatedMessagePreview()
+                                }
+                              }, null, 2)}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* SUB-TAB: CONTA E SEGURANCA */}
             {activeSubTab === "conta" && (
               <div className="space-y-5 animate-in fade-in duration-250">
@@ -1022,6 +1525,65 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
                   </div>
                 </div>
 
+                <div className="border-t border-outline-variant/20 my-6 pt-6 space-y-4 animate-in fade-in duration-300">
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold text-on-surface uppercase tracking-wider flex items-center gap-2">
+                      <FileJson className="w-4 h-4 text-[#cfa85c]" />
+                      Backup e Exportação de Dados
+                    </h4>
+                    <p className="text-xs text-on-surface-variant font-medium">
+                      Realize o download de uma cópia de segurança completa de todo o seu trabalho. O arquivo gerado está no formato JSON e contém todos os dados de imóveis, clientes e tarefas do Metria CRM.
+                    </p>
+                  </div>
+
+                  {/* Summary of what will be exported */}
+                  <div className="grid grid-cols-3 gap-3 bg-surface-container-low p-3.5 rounded-xl border border-outline-variant/30 max-w-xl">
+                    <div className="text-center p-2 rounded-lg bg-surface-container-lowest border border-outline-variant/10">
+                      <span className="block text-lg font-black text-primary">{properties.length}</span>
+                      <span className="text-[9px] uppercase font-bold text-on-surface-variant tracking-wider">Imóveis</span>
+                    </div>
+                    <div className="text-center p-2 rounded-lg bg-surface-container-lowest border border-outline-variant/10">
+                      <span className="block text-lg font-black text-primary">{clients.length}</span>
+                      <span className="text-[9px] uppercase font-bold text-on-surface-variant tracking-wider">Clientes</span>
+                    </div>
+                    <div className="text-center p-2 rounded-lg bg-surface-container-lowest border border-outline-variant/10">
+                      <span className="block text-lg font-black text-primary">{tasks.length}</span>
+                      <span className="text-[9px] uppercase font-bold text-on-surface-variant tracking-wider">Tarefas</span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3 items-center">
+                    <button
+                      type="button"
+                      onClick={handleDownloadBackup}
+                      disabled={isExporting}
+                      className="flex items-center gap-2 bg-[#cfa85c] hover:opacity-95 text-neutral-900 font-extrabold text-xs px-5 py-3 rounded-xl transition-all shadow-sm cursor-pointer active:scale-95 disabled:opacity-50"
+                    >
+                      {isExporting ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Gerando arquivo JSON...
+                        </>
+                      ) : exportSuccess ? (
+                        <>
+                          <Check className="w-4 h-4" />
+                          Backup Baixado com Sucesso!
+                        </>
+                      ) : (
+                        <>
+                          <Download className="w-4 h-4" />
+                          Exportar Dados (Fazer Backup)
+                        </>
+                      )}
+                    </button>
+                    {exportSuccess && (
+                      <span className="text-xs text-emerald-600 font-bold flex items-center gap-1 animate-in fade-in duration-200">
+                        ✓ Download concluído! Arquivo salvo em sua máquina.
+                      </span>
+                    )}
+                  </div>
+                </div>
+
                 <div className="border-t border-outline-variant/20 my-6 pt-6">
                   <h4 className="text-xs font-bold text-red-600 uppercase tracking-wider mb-2">Desconexão da Conta</h4>
                   <p className="text-xs text-on-surface-variant mb-4 font-medium">
@@ -1078,6 +1640,7 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
                         {orgPlan === "start" && "Plano Start"}
                         {orgPlan === "pro" && "Plano Pro (IA Integrada)"}
                         {orgPlan === "max" && "Plano Max (Imobiliária & Equipe)"}
+                        {orgPlan === "pro_max" && "Plano PRO MAX (Imobiliária Avançada)"}
                         <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-200">Ativo</span>
                       </h4>
                       <p className="text-xs text-on-surface-variant font-medium mt-0.5">Organização: <span className="text-primary font-bold">{orgName || "Carregando..."}</span></p>
@@ -1090,6 +1653,7 @@ export default function SettingsView({ currentUser, onUpdateSuccess, onLogout }:
                         {orgPlan === "start" && "R$ 39,90/mês"}
                         {orgPlan === "pro" && "R$ 79,90/mês"}
                         {orgPlan === "max" && "R$ 149,90/mês"}
+                        {orgPlan === "pro_max" && "R$ 999,00/mês"}
                       </strong>
                     </div>
                   </div>

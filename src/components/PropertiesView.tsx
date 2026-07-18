@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Property, User, Client } from "../types";
 import { Search, Home, Plus, Bed, Square, Shield, X, Check, Save, Loader2, DollarSign, Bath, Car, Upload, Video, Film, Trash, Image as ImageIcon, Star, Download } from "lucide-react";
 import { exportPropertiesToCSV } from "../utils/csvExport";
+import { exportPropertiesListToPDF } from "../utils/pdfExport";
 import { apiFetch } from "../api";
 
 interface PropertiesViewProps {
@@ -429,14 +430,24 @@ export default function PropertiesView({ properties, clients, onAddProperty, onS
             <div className="flex items-center gap-3">
               <span className="text-xs text-primary font-bold">{filteredProperties.length} imóveis</span>
               {properties.length > 0 && (
-                <button
-                  onClick={() => exportPropertiesToCSV(filteredProperties, true)}
-                  className="flex items-center gap-1 px-2.5 py-1 text-[11px] bg-surface-container-high hover:bg-surface-container-highest text-on-surface-variant border border-outline-variant/30 rounded-lg font-bold transition-all cursor-pointer shadow-sm active:scale-95"
-                  title="Exportar imóveis filtrados para CSV"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Exportar CSV</span>
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => exportPropertiesToCSV(filteredProperties, true)}
+                    className="flex items-center gap-1 px-2.5 py-1 text-[11px] bg-surface-container-high hover:bg-surface-container-highest text-on-surface-variant border border-outline-variant/30 rounded-lg font-bold transition-all cursor-pointer shadow-sm active:scale-95"
+                    title="Exportar imóveis filtrados para CSV"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Exportar CSV</span>
+                  </button>
+                  <button
+                    onClick={() => exportPropertiesListToPDF(filteredProperties)}
+                    className="flex items-center gap-1 px-2.5 py-1 text-[11px] bg-[#004d3e]/10 hover:bg-[#004d3e]/20 text-[#004d3e] border border-[#004d3e]/20 rounded-lg font-bold transition-all cursor-pointer shadow-sm active:scale-95"
+                    title="Exportar imóveis filtrados para PDF"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Exportar PDF</span>
+                  </button>
+                </div>
               )}
             </div>
           </div>

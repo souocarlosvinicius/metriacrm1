@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { LayoutDashboard, Home, Users, CalendarDays, Bell, Sparkles, Search, X, FolderSync, Handshake, Settings, ClipboardCheck, AlertTriangle, Clock, Check, Users2 } from "lucide-react";
+import { LayoutDashboard, Home, Users, CalendarDays, Bell, Sparkles, Search, X, FolderSync, Handshake, Settings, ClipboardCheck, AlertTriangle, Clock, Check, Users2, TrendingUp } from "lucide-react";
 import { Property, Client, Task, DBStatus, User, Proposal, Visit } from "./types";
 import DashboardView from "./components/DashboardView";
 import PropertiesView from "./components/PropertiesView";
@@ -9,7 +9,7 @@ import TasksView from "./components/TasksView";
 import PipelineView from "./components/PipelineView";
 import TransactionsView from "./components/TransactionsView";
 import SettingsView from "./components/SettingsView";
-import ChecklistView from "./components/ChecklistView";
+import InfoView from "./components/InfoView";
 import TeamView from "./components/TeamView";
 import PropertyModal from "./components/PropertyModal";
 import ClientModal from "./components/ClientModal";
@@ -884,20 +884,6 @@ export default function App() {
 
         {/* Action icons & Profile */}
         <div className="flex items-center gap-3 shrink-0">
-          {/* Checklist de Lançamento Button */}
-          <button 
-            onClick={() => setActiveTab("checklist")}
-            className={`px-3 py-1.5 rounded-full transition-all flex items-center gap-1.5 cursor-pointer text-xs font-bold border ${
-              activeTab === "checklist"
-                ? "bg-primary border-primary text-on-primary shadow-sm"
-                : "bg-surface-container-high border-outline-variant/30 hover:bg-surface-container-highest text-primary"
-            }`}
-            title="Checklist de Lançamento"
-          >
-            <ClipboardCheck className="w-4 h-4 shrink-0" />
-            <span className="hidden sm:inline">Checklist Lançamento</span>
-          </button>
-
           <div className="relative notification-container">
             <button 
               onClick={() => setShowNotificationDropdown(!showNotificationDropdown)}
@@ -1157,6 +1143,7 @@ export default function App() {
               transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
             >
               <TasksView
+                currentUser={currentUser}
                 tasks={tasks}
                 clients={clients}
                 properties={properties}
@@ -1206,6 +1193,9 @@ export default function App() {
             >
               <SettingsView
                 currentUser={currentUser}
+                properties={properties}
+                clients={clients}
+                tasks={tasks}
                 onUpdateSuccess={(updatedUser) => {
                   localStorage.setItem("vega_crm_user", JSON.stringify(updatedUser));
                   setCurrentUser(updatedUser);
@@ -1224,15 +1214,26 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeTab === "checklist" && (
+          {activeTab === "info" && (
             <motion.div
-              key="checklist"
+              key="info"
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -15 }}
               transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
             >
-              <ChecklistView />
+              <InfoView
+                properties={properties}
+                clients={clients}
+                tasks={tasks}
+                proposals={proposals}
+                visits={visits}
+                currentUser={currentUser}
+                onNavigateToTab={setActiveTab}
+                dbStatus={dbStatus}
+                onSelectClient={(client) => setSelectedClient(client)}
+                onAddTask={handleAddTask}
+              />
             </motion.div>
           )}
 
@@ -1420,13 +1421,13 @@ export default function App() {
           <Handshake className="w-5 h-5" />
         </button>
         <button
-          onClick={() => setActiveTab("checklist")}
+          onClick={() => setActiveTab("info")}
           className={`p-3 rounded-xl transition-all tooltip cursor-pointer ${
-            activeTab === "checklist" ? "bg-primary text-on-primary" : "text-on-surface-variant hover:bg-surface-container"
+            activeTab === "info" ? "bg-primary text-on-primary" : "text-on-surface-variant hover:bg-surface-container"
           }`}
-          title="Checklist de Lançamento"
+          title="Informações"
         >
-          <ClipboardCheck className="w-5 h-5" />
+          <TrendingUp className="w-5 h-5" />
         </button>
         <button
           onClick={() => setActiveTab("settings")}

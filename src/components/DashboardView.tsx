@@ -44,7 +44,9 @@ import {
   Sparkle,
   Pencil,
   Settings,
-  X
+  X,
+  ChevronLeft,
+  ChevronRight
 } from "lucide-react";
 
 interface DashboardViewProps {
@@ -61,6 +63,7 @@ interface DashboardViewProps {
   onToggleTaskCompletion?: (id: string, completed: boolean) => Promise<void>;
   onDeleteTask?: (id: string) => Promise<void>;
   onSelectClient?: (client: Client) => void;
+  onSelectProperty?: (property: Property) => void;
 }
 
 export default function DashboardView({ 
@@ -76,11 +79,35 @@ export default function DashboardView({
   onPrefillClientForTask,
   onToggleTaskCompletion,
   onDeleteTask,
-  onSelectClient
+  onSelectClient,
+  onSelectProperty
 }: DashboardViewProps) {
   const [isGeneratingAiTasks, setIsGeneratingAiTasks] = useState(false);
   const [suggestedAiTasks, setSuggestedAiTasks] = useState<Task[]>([]);
   const [aiTasksAdded, setAiTasksAdded] = useState<Record<number, boolean>>({});
+
+  const carouselRef = React.useRef<HTMLDivElement>(null);
+
+  const scrollCarousel = (direction: "left" | "right") => {
+    if (carouselRef.current) {
+      const { scrollLeft, clientWidth } = carouselRef.current;
+      const scrollAmount = clientWidth * 0.75;
+      carouselRef.current.scrollTo({
+        left: direction === "left" ? scrollLeft - scrollAmount : scrollLeft + scrollAmount,
+        behavior: "smooth"
+      });
+    }
+  };
+
+  const recentProperties = React.useMemo(() => {
+    return [...properties]
+      .sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return timeB - timeA;
+      })
+      .slice(0, 5);
+  }, [properties]);
 
   const [currentPlan, setCurrentPlan] = useState<"beta" | "start" | "pro" | "max" | "pro_max">("beta");
   const [orgName, setOrgName] = useState<string>("");
@@ -623,6 +650,158 @@ export default function DashboardView({
             <span className="text-[10px] text-on-surface-variant/70 font-mono mt-1 bg-surface-container px-2 py-0.5 rounded-full">
               📍 {currentUser.primaryCity}
             </span>
+          </div>
+        )}
+      </section>
+
+      {/* SEÇÃO IMÓVEIS RECENTES (CARROUSEL HORIZONTAL) */}
+      <section className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="space-y-1">
+            <h3 className="font-display text-title-lg text-primary font-bold flex items-center gap-2">
+              <span className="p-1.5 bg-primary/10 rounded-lg">
+                <Home className="w-5 h-5 text-primary" />
+              </span>
+              Imóveis Recém-Captados
+            </h3>
+            <p className="text-xs text-on-surface-variant font-medium">
+              Últimos lançamentos e propriedades captadas adicionadas à sua carteira
+            </p>
+          </div>
+
+          {recentProperties.length > 0 && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => scrollCarousel("left")}
+                className="p-1.5 bg-surface-container hover:bg-surface-container-high text-on-surface border border-outline-variant/30 rounded-full transition-all cursor-pointer shadow-sm active:scale-90"
+                title="Rolar para esquerda"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => scrollCarousel("right")}
+                className="p-1.5 bg-surface-container hover:bg-surface-container-high text-on-surface border border-outline-variant/30 rounded-full transition-all cursor-pointer shadow-sm active:scale-90"
+                title="Rolar para direita"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {recentProperties.length === 0 ? (
+          <div className="flex flex-col items-center justify-center text-center py-10 px-6 bg-surface-container-low rounded-2xl border border-dashed border-outline-variant/40 shadow-sm">
+            <div className="w-12 h-12 rounded-full bg-on-surface-variant/10 text-on-surface-variant flex items-center justify-center mb-3">
+              <Home className="w-6 h-6 stroke-[1.5]" />
+            </div>
+            <p className="text-xs font-bold text-on-surface">Sua carteira de imóveis está vazia</p>
+            <p className="text-[11px] text-on-surface-variant max-w-sm mt-1 leading-relaxed">
+              Cadastre novos imóveis para acompanhar as últimas captações diretamente no painel.
+            </p>
+            <button
+              onClick={() => onNavigateToTab("properties")}
+              className="mt-3 px-4 py-1.5 bg-primary hover:bg-primary/95 text-on-primary text-[11px] font-black rounded-lg shadow-sm transition-all cursor-pointer active:scale-95"
+            >
+              Cadastrar Imóvel
+            </button>
+          </div>
+        ) : (
+          <div 
+            ref={carouselRef}
+            className="flex gap-4 overflow-x-auto scroll-smooth scrollbar-none pb-2 px-0.5 -mx-1"
+          >
+            {recentProperties.map((prop, idx) => {
+              const mainPhoto = prop.photos && prop.photos.length > 0 
+                ? prop.photos[0] 
+                : "https://images.unsplash.com/photo-1564013799919-ab600027ffc6?auto=format&fit=crop&w=800&q=80";
+              
+              const isRent = prop.modality === "Aluguel";
+              const isBoth = prop.modality === "Ambos";
+              
+              return (
+                <div
+                  key={prop.id || prop._id || idx}
+                  onClick={() => onSelectProperty && onSelectProperty(prop)}
+                  className="flex-none w-[280px] sm:w-[320px] bg-surface-container-lowest rounded-2xl border border-outline-variant/30 overflow-hidden shadow-sm hover:shadow-md transition-all cursor-pointer hover:border-primary/30 group relative flex flex-col justify-between"
+                >
+                  {/* Photo area */}
+                  <div className="relative h-40 overflow-hidden bg-surface-container-low shrink-0">
+                    <img 
+                      src={mainPhoto} 
+                      alt={prop.title}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    />
+                    {/* Shadow overlay */}
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+                    
+                    {/* Floating badges */}
+                    <div className="absolute top-3 left-3 flex flex-wrap gap-1">
+                      <span className="text-[9px] font-black text-white bg-primary/80 backdrop-blur-md border border-primary-container/20 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                        {prop.type}
+                      </span>
+                      <span className="text-[9px] font-black text-[#004d3e] bg-secondary/90 backdrop-blur-md px-2 py-0.5 rounded-full uppercase tracking-wider">
+                        {isRent ? "Aluguel" : isBoth ? "Venda & Loc." : "Venda"}
+                      </span>
+                    </div>
+
+                    {prop.code && (
+                      <div className="absolute top-3 right-3 text-[9px] font-mono font-bold text-white bg-black/50 backdrop-blur-md px-2 py-0.5 rounded-md">
+                        {prop.code}
+                      </div>
+                    )}
+
+                    {/* Highlighted Price overlay */}
+                    <div className="absolute bottom-3 left-3 right-3 flex items-baseline justify-between text-white">
+                      <span className="text-base font-black tracking-tight drop-shadow-md">
+                        {prop.price 
+                          ? `R$ ${prop.price.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}` 
+                          : "Consulte"}
+                        {isRent && <span className="text-[10px] font-medium">/mês</span>}
+                      </span>
+                      
+                      {prop.condo > 0 && (
+                        <span className="text-[10px] font-bold text-white/90 drop-shadow-sm">
+                          Cond. R$ {prop.condo}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Details Area */}
+                  <div className="p-4 space-y-2 flex-1 flex flex-col justify-between">
+                    <div className="space-y-1">
+                      <h4 className="font-display font-bold text-primary text-sm line-clamp-1 group-hover:text-secondary transition-colors">
+                        {prop.title}
+                      </h4>
+                      <p className="text-[11px] text-on-surface-variant font-medium flex items-center gap-1 line-clamp-1">
+                        <MapPin className="w-3.5 h-3.5 text-secondary shrink-0" />
+                        {prop.neighborhood}{prop.city ? `, ${prop.city}` : ""}
+                      </p>
+                    </div>
+
+                    {/* Specs badges bar */}
+                    <div className="flex items-center gap-2.5 pt-2 border-t border-outline-variant/20 text-[10px] text-on-surface-variant font-bold shrink-0">
+                      {prop.bedrooms > 0 && (
+                        <span className="flex items-center gap-1">
+                          🛏️ {prop.bedrooms} Qts
+                        </span>
+                      )}
+                      {prop.suites > 0 && (
+                        <span className="flex items-center gap-1">
+                          🚿 {prop.suites} Sutes
+                        </span>
+                      )}
+                      {prop.area > 0 && (
+                        <span className="flex items-center gap-1">
+                          📐 {prop.area} m²
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </section>

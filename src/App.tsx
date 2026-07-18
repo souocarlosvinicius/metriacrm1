@@ -1064,6 +1064,7 @@ export default function App() {
                 onAddTask={handleAddTask}
                 onNavigateToTab={(tab) => setActiveTab(tab)}
                 onSelectClient={(client) => setSelectedClient(client)}
+                onSelectProperty={(property) => setSelectedProperty(property)}
                 onPrefillClientForTask={(client) => {
                   setPrefilledClientForTask(client);
                   setActiveTab("tasks");

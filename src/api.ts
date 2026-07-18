@@ -610,7 +610,7 @@ async function checkSupabaseSchemaMissing(): Promise<boolean> {
   }
 }
 
-export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   let url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 
   // Helper to construct a mock JSON response
@@ -895,39 +895,51 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
     }
 
     if (pathname === "/api/auth/register") {
-      const { email, password, name, username, role, phone, avatarUrl } = body;
-      const { data, error } = await supabase.auth.signUp({
-        email: email,
-        password: password,
-        options: {
-          data: {
-            name,
-            username,
-            role,
-            phone,
-            avatarUrl
-          }
+      try {
+        const { email, password, name, username, role, phone, avatarUrl } = body || {};
+        if (!email || !password) {
+          return mockResponse({ error: "E-mail e senha são obrigatórios para o cadastro." }, 400);
         }
-      });
-      if (error) {
-        return mockResponse({ error: error.message }, 400);
+        const { data, error } = await supabase.auth.signUp({
+          email: email,
+          password: password,
+          options: {
+            data: {
+              name,
+              username,
+              role,
+              phone,
+              avatarUrl
+            }
+          }
+        });
+        if (error) {
+          return mockResponse({ error: error.message }, 400);
+        }
+        if (!data?.user) {
+          return mockResponse({ error: "Cadastro realizado, mas nenhum usuário retornado pelo sistema de autenticação." }, 400);
+        }
+        const profileData = {
+          id: data.user.id,
+          email: email,
+          name: name || email.split("@")[0],
+          username: username || email.split("@")[0],
+          role: role || "broker",
+          phone: phone || "",
+          avatarUrl: avatarUrl || "",
+          onboardingCompleted: false
+        };
+        const dbProfile = mapProfileToDB(profileData);
+        const { error: upsertError } = await supabase.from("profiles").upsert(dbProfile);
+        if (upsertError) {
+          console.error("Erro ao cadastrar perfil no Supabase:", upsertError);
+          return mockResponse({ error: `Usuário cadastrado com sucesso, mas ocorreu um erro ao salvar o perfil no banco de dados: ${upsertError.message}` }, 400);
+        }
+        return mockResponse(profileData);
+      } catch (err: any) {
+        console.error("Exceção não tratada no registro de usuário:", err);
+        return mockResponse({ error: `Erro inesperado no cadastro de usuário: ${err.message || err}` }, 500);
       }
-      const profileData = {
-        id: data.user!.id,
-        email: email,
-        name: name,
-        username: username,
-        role: role,
-        phone: phone,
-        avatarUrl: avatarUrl,
-        onboardingCompleted: false
-      };
-      const dbProfile = mapProfileToDB(profileData);
-      const { error: upsertError } = await supabase.from("profiles").upsert(dbProfile);
-      if (upsertError) {
-        console.error("Erro ao cadastrar perfil no Supabase:", upsertError);
-      }
-      return mockResponse(profileData);
     }
 
     if (pathname === "/api/auth/logout") {
@@ -2718,4 +2730,59 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
   }
 
   return mockResponse({ error: "Endpoint não suportado ou não implementado no modo de demonstração local." }, 501);
+}
+
+export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const method = (init?.method || "GET").toUpperCase();
+  console.log(`[apiFetch REQUEST] ${method} ${url}`, init?.body ? `Body length: ${(init.body as string).length}` : '');
+
+  try {
+    const res = await _apiFetchInternal(input, init);
+    
+    // Check and log response
+    try {
+      const resClone = res.clone();
+      const text = await resClone.text();
+      console.log(`[apiFetch RESPONSE] ${method} ${url} Status: ${res.status}`, text.slice(0, 200));
+      
+      const isHtml = text.trim().startsWith("<") || text.toLowerCase().includes("<!doctype html>") || text.toLowerCase().includes("<html>") || text.toLowerCase().includes("the page") || text.toLowerCase().includes("cannot get") || text.toLowerCase().includes("cannot post");
+      
+      if (isHtml) {
+        console.error(`[apiFetch HTML/ERROR RESPONSE DETECTED for ${method} ${url}]:`, text);
+        
+        // Generate a helpful user-facing error message based on url/context
+        let friendlyMessage = `O servidor retornou uma resposta inesperada em formato de página da Web (HTML, Status ${res.status}).`;
+        if (text.toLowerCase().includes("cannot post") || text.toLowerCase().includes("cannot get")) {
+          friendlyMessage = `O endpoint do servidor para esta ação não foi encontrado ou está desabilitado (${method} em ${url}).`;
+        } else if (text.toLowerCase().includes("not found") || text.toLowerCase().includes("the page cannot be found") || text.toLowerCase().includes("could not be found")) {
+          friendlyMessage = `A página ou recurso solicitado não foi encontrado no servidor (${res.status}).`;
+        } else if (res.status === 502 || res.status === 503 || res.status === 504) {
+          friendlyMessage = `O serviço está temporariamente indisponível ou em manutenção na nuvem (${res.status}).`;
+        }
+        
+        // Return a mock JSON response so that the client-side res.json() call succeeds
+        return new Response(JSON.stringify({
+          error: friendlyMessage,
+          rawHtml: text.slice(0, 500)
+        }), {
+          status: res.status || 500,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+    } catch (logErr) {
+      console.error(`[apiFetch Response Intercept Error]`, logErr);
+    }
+    
+    return res;
+  } catch (err: any) {
+    console.error(`[apiFetch EXCEPTION] ${method} ${url}:`, err);
+    // Return a mock JSON response for network/connection errors so that the UI handles them gracefully
+    return new Response(JSON.stringify({
+      error: `Erro de conexão ou rede ao acessar o servidor: ${err.message || err}`
+    }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
 }

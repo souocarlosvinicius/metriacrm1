@@ -648,7 +648,11 @@ export default function ClientsView({
                           )}
                         </h4>
                         <span className="text-[10px] text-on-surface-variant font-mono whitespace-nowrap shrink-0">
-                          {new Date(c.createdAt || "").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
+                          {(() => {
+                            if (!c.createdAt) return "--/--";
+                            const d = new Date(c.createdAt);
+                            return isNaN(d.getTime()) ? "--/--" : d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+                          })()}
                         </span>
                       </div>
                       

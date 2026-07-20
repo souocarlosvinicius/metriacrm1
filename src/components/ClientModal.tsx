@@ -410,7 +410,14 @@ export default function ClientModal({
                     <div className="col-span-2 pt-2 border-t border-outline-variant/40">
                       <p className="text-[10px] text-on-surface-variant uppercase font-bold">Data do Próximo Follow-up</p>
                       <p className="font-semibold text-red-600 mt-0.5">
-                        {client.nextFollowUpDate.split("-").reverse().join("/")}
+                        {(() => {
+                          const parts = client.nextFollowUpDate.split("-");
+                          if (parts.length === 3) {
+                            return `${parts[2]}/${parts[1]}/${parts[0]}`;
+                          }
+                          const d = new Date(client.nextFollowUpDate);
+                          return isNaN(d.getTime()) ? client.nextFollowUpDate : d.toLocaleDateString("pt-BR");
+                        })()}
                       </p>
                     </div>
                   )}

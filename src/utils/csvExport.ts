@@ -96,7 +96,10 @@ export function exportClientsToCSV(clients: Client[], isFiltered: boolean = fals
     escapeCSVCell(c.minBudget),
     escapeCSVCell(c.maxBudget),
     escapeCSVCell(c.observations),
-    escapeCSVCell(c.createdAt ? new Date(c.createdAt).toLocaleDateString("pt-BR") : "")
+    escapeCSVCell(c.createdAt ? (() => {
+      const d = new Date(c.createdAt);
+      return isNaN(d.getTime()) ? "" : d.toLocaleDateString("pt-BR");
+    })() : "")
   ]);
 
   const suffix = isFiltered ? "filtrados" : "completo";
@@ -157,7 +160,10 @@ export function exportPropertiesToCSV(properties: Property[], isFiltered: boolea
     escapeCSVCell(p.captadorName || ""),
     escapeCSVCell(p.captadorPhone || ""),
     escapeCSVCell(p.estimatedCommission || ""),
-    escapeCSVCell(p.createdAt ? new Date(p.createdAt).toLocaleDateString("pt-BR") : "")
+    escapeCSVCell(p.createdAt ? (() => {
+      const d = new Date(p.createdAt);
+      return isNaN(d.getTime()) ? "" : d.toLocaleDateString("pt-BR");
+    })() : "")
   ]);
 
   const suffix = isFiltered ? "filtrados" : "completo";

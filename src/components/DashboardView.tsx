@@ -145,9 +145,9 @@ export default function DashboardView({
       console.error("Error loading goals from localStorage:", e);
     }
     return {
-      mensal: 3000000,
-      semestral: 18000000,
-      anual: 36000000
+      mensal: 0,
+      semestral: 0,
+      anual: 0
     };
   });
   
@@ -168,8 +168,8 @@ export default function DashboardView({
     e.preventDefault();
     const cleanNum = tempGoalInput.replace(/[^\d]/g, "");
     const val = Number(cleanNum);
-    if (isNaN(val) || val <= 0) {
-      alert("Por favor, insira um valor válido maior que zero.");
+    if (isNaN(val) || val < 0) {
+      alert("Por favor, insira um valor válido maior ou igual a zero.");
       return;
     }
     const updated = { ...goals, [goalPeriod]: val };
@@ -196,10 +196,10 @@ export default function DashboardView({
     const cleanSemestral = Number(configGoalSemestral.replace(/[^\d]/g, ""));
     const cleanAnual = Number(configGoalAnual.replace(/[^\d]/g, ""));
 
-    if (isNaN(cleanMensal) || cleanMensal <= 0 ||
-        isNaN(cleanSemestral) || cleanSemestral <= 0 ||
-        isNaN(cleanAnual) || cleanAnual <= 0) {
-      alert("Por favor, insira valores válidos maiores que zero para todas as metas.");
+    if (isNaN(cleanMensal) || cleanMensal < 0 ||
+        isNaN(cleanSemestral) || cleanSemestral < 0 ||
+        isNaN(cleanAnual) || cleanAnual < 0) {
+      alert("Por favor, insira valores válidos maiores ou iguais a zero para todas as metas.");
       return;
     }
 

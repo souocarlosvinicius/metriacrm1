@@ -151,9 +151,9 @@ export default function InfoView({
       console.error("Error loading goals from localStorage:", e);
     }
     return {
-      mensal: 3000000,
-      semestral: 18000000,
-      anual: 36000000
+      mensal: 0,
+      semestral: 0,
+      anual: 0
     };
   });
   
@@ -193,7 +193,7 @@ export default function InfoView({
     } catch (e) {
       console.error("Error loading visits goal:", e);
     }
-    return 15; // default 15 visits per month
+    return 0; // default 0 visits per month
   });
 
   const [isEditingVgvGoal, setIsEditingVgvGoal] = useState(false);
@@ -224,8 +224,8 @@ export default function InfoView({
     e.preventDefault();
     const cleanNum = tempVgvGoalInput.replace(/[^\d]/g, "");
     const val = Number(cleanNum);
-    if (isNaN(val) || val <= 0) {
-      alert("Por favor, insira um valor válido maior que zero.");
+    if (isNaN(val) || val < 0) {
+      alert("Por favor, insira um valor válido maior ou igual a zero.");
       return;
     }
     const updated = { ...goals, mensal: val };
@@ -237,8 +237,8 @@ export default function InfoView({
     e.preventDefault();
     const cleanNum = tempVisitsGoalInput.replace(/[^\d]/g, "");
     const val = Number(cleanNum);
-    if (isNaN(val) || val <= 0) {
-      alert("Por favor, insira um valor válido maior que zero.");
+    if (isNaN(val) || val < 0) {
+      alert("Por favor, insira um valor válido maior ou igual a zero.");
       return;
     }
     setMonthlyVisitsGoal(val);
@@ -255,8 +255,8 @@ export default function InfoView({
     e.preventDefault();
     const cleanNum = tempGoalInput.replace(/[^\d]/g, "");
     const val = Number(cleanNum);
-    if (isNaN(val) || val <= 0) {
-      alert("Por favor, insira um valor válido maior que zero.");
+    if (isNaN(val) || val < 0) {
+      alert("Por favor, insira um valor válido maior ou igual a zero.");
       return;
     }
     const updated = { ...goals, [goalPeriod]: val };
@@ -277,10 +277,10 @@ export default function InfoView({
     const cleanSemestral = Number(configGoalSemestral.replace(/[^\d]/g, ""));
     const cleanAnual = Number(configGoalAnual.replace(/[^\d]/g, ""));
 
-    if (isNaN(cleanMensal) || cleanMensal <= 0 ||
-        isNaN(cleanSemestral) || cleanSemestral <= 0 ||
-        isNaN(cleanAnual) || cleanAnual <= 0) {
-      alert("Por favor, insira valores válidos maiores que zero para todas as metas.");
+    if (isNaN(cleanMensal) || cleanMensal < 0 ||
+        isNaN(cleanSemestral) || cleanSemestral < 0 ||
+        isNaN(cleanAnual) || cleanAnual < 0) {
+      alert("Por favor, insira valores válidos maiores ou iguais a zero para todas as metas.");
       return;
     }
 
@@ -1658,6 +1658,7 @@ export default function InfoView({
                     />
                   </div>
                   <button type="submit" className="px-3 py-1.5 bg-primary text-on-primary hover:opacity-95 text-xs font-bold rounded-lg cursor-pointer">Salvar</button>
+                  <button type="button" onClick={() => { setTempVgvGoalInput("0"); }} className="px-3 py-1.5 bg-error/10 text-error hover:bg-error/20 text-xs font-bold rounded-lg cursor-pointer">Zerar</button>
                   <button type="button" onClick={() => setIsEditingVgvGoal(false)} className="px-3 py-1.5 bg-surface-container border border-outline-variant/30 text-on-surface hover:bg-surface-container-high text-xs font-bold rounded-lg cursor-pointer">X</button>
                 </div>
               </form>
@@ -1750,6 +1751,7 @@ export default function InfoView({
                     />
                   </div>
                   <button type="submit" className="px-3 py-1.5 bg-primary text-on-primary hover:opacity-95 text-xs font-bold rounded-lg cursor-pointer">Salvar</button>
+                  <button type="button" onClick={() => { setTempVisitsGoalInput("0"); }} className="px-3 py-1.5 bg-error/10 text-error hover:bg-error/20 text-xs font-bold rounded-lg cursor-pointer">Zerar</button>
                   <button type="button" onClick={() => setIsEditingVisitsGoal(false)} className="px-3 py-1.5 bg-surface-container border border-outline-variant/30 text-on-surface hover:bg-surface-container-high text-xs font-bold rounded-lg cursor-pointer">X</button>
                 </div>
               </form>
@@ -2670,6 +2672,19 @@ export default function InfoView({
 
                 {/* Footer Buttons */}
                 <footer className="flex justify-end gap-3 px-6 py-4 bg-surface-container border-t border-outline-variant sticky bottom-0 z-10">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm("Deseja realmente zerar todas as metas?")) {
+                        setConfigGoalMensal("0");
+                        setConfigGoalSemestral("0");
+                        setConfigGoalAnual("0");
+                      }
+                    }}
+                    className="mr-auto px-4 py-2 bg-error/10 hover:bg-error/20 text-error rounded-xl text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Zerar Metas
+                  </button>
                   <button
                     type="button"
                     onClick={() => setShowGoalConfigPanel(false)}

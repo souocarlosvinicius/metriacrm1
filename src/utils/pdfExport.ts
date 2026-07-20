@@ -212,7 +212,14 @@ export function exportClientReportToPDF(
     
     const tempStr = client.temperature ? `Temperatura: ${client.temperature}` : "";
     const actionStr = client.nextAction ? `Próxima Ação: ${client.nextAction}` : "";
-    const dateStr = client.nextFollowUpDate ? `Data: ${new Date(client.nextFollowUpDate).toLocaleDateString("pt-BR")}` : "";
+    
+    let dateStr = "";
+    if (client.nextFollowUpDate) {
+      const d = new Date(client.nextFollowUpDate + "T12:00:00");
+      if (!isNaN(d.getTime())) {
+        dateStr = `Data: ${d.toLocaleDateString("pt-BR")}`;
+      }
+    }
 
     const combinedStr = [tempStr, actionStr, dateStr].filter(Boolean).join("  |  ");
     

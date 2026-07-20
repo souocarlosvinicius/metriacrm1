@@ -224,9 +224,18 @@ export default function PipelineView({
     const nameVal = client.name || "";
     const brokerVal = currentUser?.name || "seu corretor";
     const propertyVal = linkedProp?.title || "imóvel de interesse";
-    const dateVal = client.nextFollowUpDate 
-      ? client.nextFollowUpDate.split("-").reverse().join("/") 
-      : new Date().toLocaleDateString("pt-BR");
+    let dateVal = new Date().toLocaleDateString("pt-BR");
+    if (client.nextFollowUpDate && typeof client.nextFollowUpDate === "string") {
+      const parts = client.nextFollowUpDate.split("-");
+      if (parts.length === 3) {
+        dateVal = `${parts[2]}/${parts[1]}/${parts[0]}`;
+      } else {
+        const d = new Date(client.nextFollowUpDate);
+        if (!isNaN(d.getTime())) {
+          dateVal = d.toLocaleDateString("pt-BR");
+        }
+      }
+    }
     const hourVal = "14:00";
 
     setPName(nameVal);
@@ -893,11 +902,15 @@ export default function PipelineView({
                     <p className="text-on-surface font-semibold truncate">
                       {client.nextAction || "Nenhuma ação planejada"}
                     </p>
-                    {client.nextFollowUpDate && (
-                      <p className="text-[9px] text-on-surface-variant font-bold mt-1">
-                        Agendado para: {new Date(client.nextFollowUpDate + "T12:00:00").toLocaleDateString("pt-BR")}
-                      </p>
-                    )}
+                    {client.nextFollowUpDate && (() => {
+                      const d = new Date(client.nextFollowUpDate + "T12:00:00");
+                      if (isNaN(d.getTime())) return null;
+                      return (
+                        <p className="text-[9px] text-on-surface-variant font-bold mt-1">
+                          Agendado para: {d.toLocaleDateString("pt-BR")}
+                        </p>
+                      );
+                    })()}
                   </div>
 
                   {/* WhatsApp Quick Actions */}
@@ -1220,11 +1233,15 @@ export default function PipelineView({
                             <p className="text-on-surface font-bold truncate">
                               {client.nextAction || "Nenhum follow-up planejado"}
                             </p>
-                            {client.nextFollowUpDate && (
-                              <p className="text-[8px] text-on-surface-variant font-bold mt-1">
-                                Prazo: {new Date(client.nextFollowUpDate + "T12:00:00").toLocaleDateString("pt-BR")}
-                              </p>
-                            )}
+                            {client.nextFollowUpDate && (() => {
+                              const d = new Date(client.nextFollowUpDate + "T12:00:00");
+                              if (isNaN(d.getTime())) return null;
+                              return (
+                                <p className="text-[8px] text-on-surface-variant font-bold mt-1">
+                                  Prazo: {d.toLocaleDateString("pt-BR")}
+                                </p>
+                              );
+                            })()}
                           </div>
 
                           {/* WhatsApp Quick Actions (Desktop) */}

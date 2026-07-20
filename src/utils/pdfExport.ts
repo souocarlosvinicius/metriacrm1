@@ -800,3 +800,326 @@ export function exportPropertiesListToPDF(properties: Property[]) {
   const filename = `lista_imoveis_metria_crm_${new Date().toISOString().split("T")[0]}.pdf`;
   doc.save(filename);
 }
+
+/**
+ * Generates and downloads a monthly broker report with proposals and visits in PDF.
+ */
+export function exportMonthlyTransactionsReportToPDF(
+  proposals: Proposal[],
+  visits: Visit[],
+  currentUser: any,
+  year: number,
+  month: number
+) {
+  const doc = new jsPDF({
+    orientation: "portrait",
+    unit: "mm",
+    format: "a4",
+  });
+
+  const pageHeight = 285;
+  const margin = 15;
+  const contentWidth = 210 - margin * 2; // 180mm
+  let y = 20;
+  let pageNum = 1;
+
+  const monthNames = [
+    "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
+  ];
+  const monthLabel = `${monthNames[month]} de ${year}`;
+
+  // Filter items safely
+  const monthlyProposals = proposals.filter(p => {
+    if (!p.date) return false;
+    const parts = p.date.split("-");
+    if (parts.length < 2) return false;
+    return parseInt(parts[0]) === year && parseInt(parts[1]) === (month + 1);
+  });
+
+  const monthlyVisits = visits.filter(v => {
+    if (!v.date) return false;
+    const parts = v.date.split("-");
+    if (parts.length < 2) return false;
+    return parseInt(parts[0]) === year && parseInt(parts[1]) === (month + 1);
+  });
+
+  // Calculations
+  const totalProposals = monthlyProposals.length;
+  const acceptedProposals = monthlyProposals.filter(p => p.status === "Aceita").length;
+  const pendingProposals = monthlyProposals.filter(p => p.status === "Pendente" || p.status === "Em Análise").length;
+  const rejectedProposals = monthlyProposals.filter(p => p.status === "Recusada").length;
+  const totalValue = monthlyProposals.reduce((sum, p) => sum + (p.proposedValue || 0), 0);
+
+  const totalVisits = monthlyVisits.length;
+  const realizedVisits = monthlyVisits.filter(v => v.status === "Realizada").length;
+  const scheduledVisits = monthlyVisits.filter(v => v.status === "Agendada").length;
+  const canceledVisits = monthlyVisits.filter(v => v.status === "Cancelada").length;
+
+  const formatCurrency = (val: number) => {
+    return val.toLocaleString("pt-BR", {
+      style: "currency",
+      currency: "BRL",
+      maximumFractionDigits: 0
+    });
+  };
+
+  const checkPageLimit = (neededHeight: number) => {
+    if (y + neededHeight > pageHeight) {
+      doc.addPage();
+      pageNum++;
+      y = margin + 10;
+      
+      // Draw subtle header on new pages
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(150, 150, 150);
+      doc.text(`Relatório Mensal (${monthLabel}) | Metria CRM`, margin, margin);
+      doc.text(`Página ${pageNum}`, 210 - margin - 15, margin);
+      doc.setDrawColor(230, 230, 230);
+      doc.line(margin, margin + 2, margin + contentWidth, margin + 2);
+    }
+  };
+
+  const drawSectionTitle = (title: string) => {
+    checkPageLimit(15);
+    y += 4;
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(0, 77, 62); // Metria Primary Green
+    doc.text(title.toUpperCase(), margin, y);
+    y += 2.5;
+    doc.setDrawColor(0, 77, 62);
+    doc.setLineWidth(0.4);
+    doc.line(margin, y, margin + contentWidth, y);
+    y += 5;
+  };
+
+  // --- HEADER SECTION ---
+  doc.setFillColor(0, 77, 62); // Metria Primary Green
+  doc.rect(0, 0, 210, 32, "F");
+
+  doc.setFont("Helvetica", "bold");
+  doc.setFontSize(16);
+  doc.setTextColor(255, 255, 255);
+  doc.text("METRIA CRM", margin, 13);
+
+  doc.setFont("Helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(207, 168, 92); // Gold accent
+  doc.text(`Relatório de Negociações: ${monthLabel}`, margin, 20);
+
+  doc.setFontSize(8.5);
+  doc.setTextColor(255, 255, 255);
+  doc.text(`Corretor: ${currentUser?.name || currentUser?.email || "Não identificado"}`, margin, 26);
+
+  const dateStr = new Date().toLocaleString("pt-BR");
+  doc.text(`Gerado em: ${dateStr}`, 210 - margin - 45, 13);
+  doc.text(`Período de Referência: ${monthLabel}`, 210 - margin - 51, 20);
+
+  y = 42;
+
+  // --- OVERVIEW METRICS BOX ---
+  checkPageLimit(45);
+  doc.setFillColor(248, 250, 252); // slate-50
+  doc.setDrawColor(226, 232, 240); // slate-200
+  doc.setLineWidth(0.3);
+  doc.rect(margin, y, contentWidth, 38, "FD");
+
+  // Grid columns
+  const col1X = margin + 5;
+  const col2X = margin + (contentWidth / 2) + 5;
+
+  // Title for summary
+  doc.setFont("Helvetica", "bold");
+  doc.setFontSize(10);
+  doc.setTextColor(0, 77, 62);
+  doc.text("RESUMO DE ATIVIDADES DO MÊS", col1X, y + 6);
+
+  // Column 1 - Proposals
+  doc.setFont("Helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(71, 85, 105);
+  doc.text("Propostas Comerciais:", col1X, y + 13);
+
+  doc.setFont("Helvetica", "normal");
+  doc.setTextColor(15, 23, 42);
+  doc.text(`Total Registrado: ${totalProposals}`, col1X + 4, y + 18);
+  doc.text(`Valor Negociado (VGV): ${formatCurrency(totalValue)}`, col1X + 4, y + 23);
+  doc.text(`Status: ${acceptedProposals} Aceitas | ${pendingProposals} Pendentes | ${rejectedProposals} Recusadas`, col1X + 4, y + 28);
+
+  // Column 2 - Visits
+  doc.setFont("Helvetica", "bold");
+  doc.setTextColor(71, 85, 105);
+  doc.text("Visitas & Vistorias:", col2X, y + 13);
+
+  doc.setFont("Helvetica", "normal");
+  doc.setTextColor(15, 23, 42);
+  doc.text(`Total de Visitas: ${totalVisits}`, col2X + 4, y + 18);
+  doc.text(`Visitas Realizadas: ${realizedVisits}`, col2X + 4, y + 23);
+  doc.text(`Status: ${scheduledVisits} Agendadas | ${canceledVisits} Canceladas`, col2X + 4, y + 28);
+
+  y += 46;
+
+  // --- SECTION: PROPOSALS ---
+  drawSectionTitle("Propostas Registradas");
+  if (monthlyProposals.length === 0) {
+    doc.setFont("Helvetica", "italic");
+    doc.setFontSize(9);
+    doc.setTextColor(148, 163, 184);
+    doc.text("Nenhuma proposta comercial foi registrada para este período.", margin + 2, y);
+    y += 10;
+  } else {
+    monthlyProposals.forEach((prop, index) => {
+      checkPageLimit(28);
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(226, 232, 240);
+      doc.rect(margin, y, contentWidth, 20, "D");
+
+      // Side status bar color
+      let statusColor = [148, 163, 184]; // default grey
+      if (prop.status === "Aceita") statusColor = [16, 185, 129]; // green
+      else if (prop.status === "Recusada") statusColor = [239, 68, 68]; // red
+      else if (prop.status === "Pendente" || prop.status === "Em Análise") statusColor = [245, 158, 11]; // amber
+
+      doc.setFillColor(statusColor[0], statusColor[1], statusColor[2]);
+      doc.rect(margin, y, 1.5, 20, "F");
+
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`Proposta #${index + 1}: Cliente ${prop.clientName}`, margin + 4, y + 5);
+
+      doc.setFontSize(8);
+      doc.setTextColor(71, 85, 105);
+      doc.text("Imóvel:", margin + 4, y + 10);
+      doc.setFont("Helvetica", "normal");
+      doc.setTextColor(15, 23, 42);
+      const propTitle = prop.propertyTitle.length > 55 ? prop.propertyTitle.substring(0, 52) + "..." : prop.propertyTitle;
+      doc.text(propTitle, margin + 15, y + 10);
+
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(71, 85, 105);
+      doc.text("Valor proposto:", margin + 4, y + 15);
+      doc.setFont("Helvetica", "normal");
+      doc.setTextColor(15, 23, 42);
+      doc.text(formatCurrency(prop.proposedValue || 0), margin + 26, y + 15);
+
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(71, 85, 105);
+      doc.text("Data:", margin + 70, y + 15);
+      doc.setFont("Helvetica", "normal");
+      doc.text(prop.date ? prop.date.split("-").reverse().join("/") : "Sem data", margin + 78, y + 15);
+
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(71, 85, 105);
+      doc.text("Status:", margin + 115, y + 15);
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(statusColor[0], statusColor[1], statusColor[2]);
+      doc.text(prop.status, margin + 126, y + 15);
+
+      if (prop.nextAction) {
+        doc.setFont("Helvetica", "bold");
+        doc.setTextColor(71, 85, 105);
+        doc.text("Próximo Passo:", margin + 4, y + 20);
+        doc.setFont("Helvetica", "italic");
+        doc.setTextColor(15, 23, 42);
+        doc.text(prop.nextAction, margin + 25, y + 20);
+      }
+
+      y += 24;
+    });
+  }
+
+  // --- SECTION: VISITS ---
+  drawSectionTitle("Visitas e Agendamentos");
+  if (monthlyVisits.length === 0) {
+    doc.setFont("Helvetica", "italic");
+    doc.setFontSize(9);
+    doc.setTextColor(148, 163, 184);
+    doc.text("Nenhum agendamento de visita ou vistoria foi registrado para este período.", margin + 2, y);
+    y += 10;
+  } else {
+    monthlyVisits.forEach((visit, index) => {
+      checkPageLimit(28);
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(226, 232, 240);
+      doc.rect(margin, y, contentWidth, 20, "D");
+
+      // Side status bar color
+      let statusColor = [148, 163, 184]; // default grey
+      if (visit.status === "Realizada") statusColor = [16, 185, 129]; // green
+      else if (visit.status === "Cancelada") statusColor = [239, 68, 68]; // red
+      else if (visit.status === "Agendada") statusColor = [59, 130, 246]; // blue
+
+      doc.setFillColor(statusColor[0], statusColor[1], statusColor[2]);
+      doc.rect(margin, y, 1.5, 20, "F");
+
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`Visita #${index + 1}: Cliente ${visit.clientName}`, margin + 4, y + 5);
+
+      doc.setFontSize(8);
+      doc.setTextColor(71, 85, 105);
+      doc.text("Imóvel:", margin + 4, y + 10);
+      doc.setFont("Helvetica", "normal");
+      doc.setTextColor(15, 23, 42);
+      const visitTitle = visit.propertyTitle.length > 55 ? visit.propertyTitle.substring(0, 52) + "..." : visit.propertyTitle;
+      doc.text(visitTitle, margin + 15, y + 10);
+
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(71, 85, 105);
+      doc.text("Horário:", margin + 4, y + 15);
+      doc.setFont("Helvetica", "normal");
+      doc.setTextColor(15, 23, 42);
+      const vDateFormatted = visit.date ? visit.date.split("-").reverse().join("/") : "Sem data";
+      doc.text(`${vDateFormatted} às ${visit.time || "N/A"}`, margin + 16, y + 15);
+
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(71, 85, 105);
+      doc.text("Status:", margin + 80, y + 15);
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(statusColor[0], statusColor[1], statusColor[2]);
+      doc.text(visit.status, margin + 91, y + 15);
+
+      const feedback = visit.feedback || visit.observations || "";
+      if (feedback) {
+        doc.setFont("Helvetica", "bold");
+        doc.setTextColor(71, 85, 105);
+        doc.text("Obs/Feedback:", margin + 4, y + 19);
+        doc.setFont("Helvetica", "italic");
+        doc.setTextColor(15, 23, 42);
+        const wrappedFeedback = feedback.length > 80 ? feedback.substring(0, 77) + "..." : feedback;
+        doc.text(`"${wrappedFeedback}"`, margin + 25, y + 19);
+      }
+
+      y += 24;
+    });
+  }
+
+  // --- FOOTER NOTE ---
+  checkPageLimit(20);
+  y += 5;
+  doc.setDrawColor(226, 232, 240);
+  doc.line(margin, y, margin + contentWidth, y);
+  y += 4;
+  doc.setFont("Helvetica", "italic");
+  doc.setFontSize(7.5);
+  doc.setTextColor(148, 163, 184);
+  doc.text(
+    "Relatório de acompanhamento comercial gerado eletronicamente pelo sistema Metria CRM.",
+    margin,
+    y
+  );
+  doc.text(
+    "A análise de desempenho mensal auxilia no planejamento estratégico de vendas e metas da imobiliária.",
+    margin,
+    y + 3.5
+  );
+
+  // Trigger download of the generated PDF
+  const filename = `relatorio_mensal_${year}_${String(month + 1).padStart(2, "0")}_metria_crm.pdf`;
+  doc.save(filename);
+}
+

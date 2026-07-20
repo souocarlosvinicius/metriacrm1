@@ -1,5 +1,5 @@
-import { getInitialDemoData } from "./demoData";
 import { supabase } from "./lib/supabase";
+import { getInitialDemoData } from "./demoData";
 
 function mapProfileToDB(user: any): any {
   if (!user) return null;
@@ -540,15 +540,16 @@ export function isValidUuid(val: any): boolean {
 }
 
 // Helper to check if the current session is a Demo mode session
-function isDemoSession(): boolean {
-  const saved = localStorage.getItem("vega_crm_user");
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved);
-      return parsed && parsed.isDemo === true;
-    } catch (e) {
-      return false;
+function isDemoSession(url?: string): boolean {
+  if (typeof window !== "undefined" && window.location) {
+    const search = window.location.search || "";
+    const hash = window.location.hash || "";
+    if (search.includes("isDemo=true") || hash.includes("isDemo=true")) {
+      return true;
     }
+  }
+  if (url && url.includes("isDemo=true")) {
+    return true;
   }
   return false;
 }
@@ -622,7 +623,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
   };
 
   // --- REAL SESSION ACTIVE: COMMUNICATING DIRECTLY WITH SUPABASE ---
-  const isDemoUrl = isDemoSession() || url.includes("/api/demo/reset") || url.includes("isDemo=true");
+  const isDemoUrl = isDemoSession(url) || url.includes("/api/demo/reset") || url.includes("isDemo=true");
 
   if (!isDemoUrl) {
     const method = (init?.method || "GET").toUpperCase();
@@ -1741,25 +1742,57 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
         console.log("[DELETE CLIENT] Real Supabase RPC path", id);
 
+        // Try RPC first
         const { data, error } = await supabase.rpc("delete_client_cascade", {
           p_client_id: id,
         });
 
         if (error) {
-          console.error("Client DELETE RPC error:", error);
-          const errMsg = error.message || "";
-          if (errMsg.includes("Client not found")) {
-            return mockResponse({ error: "Cliente não encontrado." }, 404);
+          const isNotAvailable = 
+            error.code === "42883" || 
+            (error.message && (
+              error.message.includes("does not exist") || 
+              error.message.includes("function") ||
+              error.message.includes("not found") ||
+              error.message.includes("rpc")
+            ));
+
+          if (isNotAvailable) {
+            console.log("[DELETE CLIENT] RPC delete_client_cascade not available, falling back to direct table delete");
+            let deleteQuery = supabase.from("clients").delete().eq("id", id);
+            if (activeOrgId) {
+              deleteQuery = deleteQuery.eq("organization_id", activeOrgId);
+            } else {
+              deleteQuery = deleteQuery.eq("userId", session.user.id);
+            }
+            const { error: fallbackError } = await deleteQuery;
+            if (fallbackError) {
+              console.error("Client DELETE direct fallback error:", fallbackError);
+              return mockResponse({ error: fallbackError.message }, 400);
+            }
+            return mockResponse({ success: true, deletedId: id });
+          } else {
+            console.error("Client DELETE RPC error:", error);
+            const errMsg = error.message || "";
+            if (errMsg.includes("Client not found")) {
+              return mockResponse({ error: "Cliente não encontrado." }, 404);
+            }
+            if (errMsg.includes("Access denied") || errMsg.includes("permission") || errMsg.includes("authorized")) {
+              return mockResponse({ error: "Você não tem autorização para excluir este cliente." }, 403);
+            }
+            return mockResponse({
+              error: error.message || "Erro ao excluir cliente no Supabase."
+            }, 400);
           }
-          if (errMsg.includes("Access denied") || errMsg.includes("permission") || errMsg.includes("authorized")) {
-            return mockResponse({ error: "Você não tem autorização para excluir este cliente." }, 403);
-          }
-          return mockResponse({
-            error: error.message || "Erro ao excluir cliente no Supabase."
-          }, 400);
         }
 
         if (!data?.success) {
+          if (data === true || (typeof data === "object" && data.success === true)) {
+            return mockResponse({
+              success: true,
+              deletedId: id
+            });
+          }
           return mockResponse({
             error: "A exclusão não foi confirmada pelo banco de dados."
           }, 400);
@@ -2786,3 +2819,5 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
     });
   }
 }
+
+export default apiFetch;

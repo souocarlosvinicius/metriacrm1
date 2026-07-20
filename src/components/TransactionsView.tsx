@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { Proposal, Visit, Client, Property, User as LoggedUser } from "../types";
 import GuidedTour, { GuidedTourStep } from "./GuidedTour";
+import { exportMonthlyTransactionsReportToPDF } from "../utils/pdfExport";
 
 interface TransactionsViewProps {
   proposals: Proposal[];
@@ -104,6 +105,16 @@ export default function TransactionsView({
   const [vStatus, setVStatus] = useState<Visit["status"]>("Agendada");
   const [vObservations, setVObservations] = useState("");
   const [vFeedback, setVFeedback] = useState("");
+
+  // Export Monthly PDF Report state
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportYear, setExportYear] = useState<number>(() => new Date().getFullYear());
+  const [exportMonth, setExportMonth] = useState<number>(() => new Date().getMonth());
+
+  const handleExportReport = () => {
+    exportMonthlyTransactionsReportToPDF(proposals, visits, currentUser, exportYear, exportMonth);
+    setShowExportModal(false);
+  };
 
   // Filter lists based on search
   const filteredProposals = proposals.filter(p => 
@@ -250,15 +261,27 @@ export default function TransactionsView({
           <p className="text-xs text-on-surface-variant font-medium mt-1">Gerencie visitas agendadas e propostas enviadas de seus leads de forma simplificada.</p>
         </div>
 
-        {/* Action Button */}
-        <button
-          id="proposal-tour-btn-add"
-          onClick={subTab === "proposals" ? handleOpenNewProposal : handleOpenNewVisit}
-          className="self-start md:self-auto px-5 py-2.5 bg-primary text-on-primary rounded-xl font-bold text-xs flex items-center gap-2 hover:opacity-90 transition-all shadow-md active:scale-95 cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          {subTab === "proposals" ? "Nova Proposta" : "Agendar Visita"}
-        </button>
+        {/* Action Buttons */}
+        <div className="flex flex-wrap items-center gap-2 self-start md:self-auto">
+          {/* PDF Export Button */}
+          <button
+            onClick={() => setShowExportModal(true)}
+            className="px-4 py-2.5 bg-surface-container border border-outline-variant hover:bg-surface-container-high text-on-surface rounded-xl font-bold text-xs flex items-center gap-2 transition-all shadow-sm active:scale-95 cursor-pointer"
+            title="Exportar Relatório Mensal em PDF"
+          >
+            <FileText className="w-4.5 h-4.5 text-primary" />
+            <span>Relatório Mensal (PDF)</span>
+          </button>
+
+          <button
+            id="proposal-tour-btn-add"
+            onClick={subTab === "proposals" ? handleOpenNewProposal : handleOpenNewVisit}
+            className="px-5 py-2.5 bg-primary text-on-primary rounded-xl font-bold text-xs flex items-center gap-2 hover:opacity-90 transition-all shadow-md active:scale-95 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            {subTab === "proposals" ? "Nova Proposta" : "Agendar Visita"}
+          </button>
+        </div>
       </div>
 
       {/* Sub-tab Selection Rail */}
@@ -775,6 +798,87 @@ export default function TransactionsView({
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* MONTHLY REPORT EXPORT MODAL */}
+      <AnimatePresence>
+        {showExportModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-surface w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden border border-outline-variant/30 flex flex-col"
+            >
+              <header className="px-6 py-4 border-b border-outline-variant/40 flex justify-between items-center bg-white">
+                <h3 className="font-display font-bold text-title-md text-primary">
+                  Exportar Relatório Mensal
+                </h3>
+                <button onClick={() => setShowExportModal(false)} className="p-1.5 rounded-full hover:bg-surface-container">
+                  <X className="w-5 h-5 text-on-surface-variant" />
+                </button>
+              </header>
+
+              <div className="p-6 space-y-4 bg-surface-container-lowest">
+                <p className="text-xs text-on-surface-variant">
+                  Selecione o mês e o ano de referência para gerar o relatório consolidado de propostas e visitas em formato PDF.
+                </p>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-bold text-primary uppercase">Mês de Referência</label>
+                  <select
+                    value={exportMonth}
+                    onChange={(e) => setExportMonth(parseInt(e.target.value))}
+                    className="h-11 px-3 border border-outline-variant bg-white rounded-lg text-sm"
+                  >
+                    <option value={0}>Janeiro</option>
+                    <option value={1}>Fevereiro</option>
+                    <option value={2}>Março</option>
+                    <option value={3}>Abril</option>
+                    <option value={4}>Maio</option>
+                    <option value={5}>Junho</option>
+                    <option value={6}>Julho</option>
+                    <option value={7}>Agosto</option>
+                    <option value={8}>Setembro</option>
+                    <option value={9}>Outubro</option>
+                    <option value={10}>Novembro</option>
+                    <option value={11}>Dezembro</option>
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-bold text-primary uppercase">Ano de Referência</label>
+                  <select
+                    value={exportYear}
+                    onChange={(e) => setExportYear(parseInt(e.target.value))}
+                    className="h-11 px-3 border border-outline-variant bg-white rounded-lg text-sm"
+                  >
+                    {[2024, 2025, 2026, 2027, 2028].map(y => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex justify-end gap-3 pt-4 border-t border-outline-variant">
+                  <button
+                    type="button"
+                    onClick={() => setShowExportModal(false)}
+                    className="px-4 py-2.5 bg-surface-container text-on-surface-variant rounded-xl font-bold text-xs"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={handleExportReport}
+                    className="px-5 py-2.5 bg-primary text-on-primary rounded-xl font-bold text-xs shadow-md flex items-center gap-1.5 hover:opacity-95"
+                  >
+                    <FileText className="w-4 h-4" />
+                    Gerar PDF
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

@@ -11,7 +11,10 @@ import {
   YAxis,
   Tooltip,
   Legend,
-  CartesianGrid
+  CartesianGrid,
+  PieChart,
+  Pie,
+  Cell
 } from "recharts";
 import { 
   Home, 
@@ -38,6 +41,8 @@ import {
   AlertTriangle,
   Flame,
   TrendingDown,
+  TrendingUp,
+  Percent,
   RefreshCw,
   PhoneCall,
   User as UserIcon,
@@ -652,6 +657,241 @@ export default function DashboardView({
             </span>
           </div>
         )}
+      </section>
+
+      {/* SEÇÃO METAS E CONVERSÃO COMERCIAL */}
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-4">
+        {/* Card 1: Metas de VGV */}
+        <div className="bg-surface-container-lowest p-6 rounded-2xl border border-outline-variant/30 shadow-sm flex flex-col justify-between text-left">
+          <div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-outline-variant/30 gap-2">
+              <h3 className="font-display text-title-md font-bold text-primary flex items-center gap-2">
+                <span className="p-1.5 bg-primary/10 rounded-lg">
+                  <TrendingUp className="w-5 h-5 text-primary" />
+                </span>
+                Meta de VGV do Corretor
+              </h3>
+              
+              {/* Period Selector Tabs */}
+              <div className="flex bg-surface-container rounded-lg p-0.5 border border-outline-variant/30 text-xs font-bold self-start sm:self-auto">
+                {(["mensal", "semestral", "anual"] as const).map((period) => (
+                  <button
+                    key={period}
+                    onClick={() => setGoalPeriod(period)}
+                    className={`px-3 py-1.5 rounded-md transition-all cursor-pointer capitalize ${
+                      goalPeriod === period
+                        ? "bg-white text-primary shadow-sm"
+                        : "text-on-surface-variant hover:text-on-surface"
+                    }`}
+                  >
+                    {period}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              {/* Goal Progress Ring/Display */}
+              <div className="flex items-center gap-5 bg-surface-container-low/40 p-4 rounded-xl border border-outline-variant/20">
+                {/* Custom SVG Radial Gauge */}
+                <div className="relative flex items-center justify-center w-20 h-20 shrink-0">
+                  <svg className="w-full h-full transform -rotate-90">
+                    <circle
+                      cx="40"
+                      cy="40"
+                      r="32"
+                      className="stroke-surface-container-high"
+                      strokeWidth="6"
+                      fill="transparent"
+                    />
+                    <circle
+                      cx="40"
+                      cy="40"
+                      r="32"
+                      className="stroke-primary transition-all duration-500 ease-out"
+                      strokeWidth="6"
+                      fill="transparent"
+                      strokeDasharray="201"
+                      strokeDashoffset={201 - (goalPercent / 100) * 201}
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                  <span className="absolute text-sm font-black text-primary font-display">
+                    {goalPercent}%
+                  </span>
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] text-on-surface-variant/70 font-bold uppercase tracking-wider">
+                    Faturamento Realizado ({goalPeriod})
+                  </p>
+                  <p className="font-display text-lg font-black text-on-surface mt-0.5">
+                    {formatCompactBRL(completedAmount)}
+                  </p>
+                  <p className="text-xs text-on-surface-variant font-medium mt-1">
+                    Meta estabelecida: <span className="font-bold text-primary">{formatCompactBRL(currentGoalValue)}</span>
+                  </p>
+                </div>
+              </div>
+
+              {/* Goal Numbers Breakdown */}
+              <div className="grid grid-cols-2 gap-4 pt-2">
+                <div className="p-3 bg-surface-container-low rounded-xl text-left">
+                  <p className="text-[10px] text-on-surface-variant/70 font-bold uppercase tracking-wider">VGV Fechado</p>
+                  <p className="text-base font-black text-primary mt-0.5">{formatCompactBRL(completedAmount)}</p>
+                </div>
+                <div className="p-3 bg-surface-container-low rounded-xl text-left">
+                  <p className="text-[10px] text-on-surface-variant/70 font-bold uppercase tracking-wider">Restante para Meta</p>
+                  <p className="text-base font-black text-secondary mt-0.5">
+                    {remainingAmount > 0 ? formatCompactBRL(remainingAmount) : "Meta Atingida! 🎉"}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 pt-4 border-t border-outline-variant/30 flex justify-between items-center">
+            <span className="text-[10px] text-on-surface-variant/70 font-mono font-medium">
+              *Baseado em negócios com status "Fechado"
+            </span>
+            <button
+              onClick={handleStartEditGoal}
+              className="px-4 py-2 bg-primary/10 hover:bg-primary/15 text-primary text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              Editar Meta ({goalPeriod})
+            </button>
+          </div>
+        </div>
+
+        {/* Card 2: Conversão de Visita a Proposta (Gráfico de Rosca) */}
+        {(() => {
+          // Calculate conversion numbers
+          const realizedVisits = visits.filter(v => v.status === "Realizada");
+          const totalVisitsCount = visits.length;
+          const realizedVisitsCount = realizedVisits.length;
+          const proposalsCount = proposals.length;
+
+          const isNoData = realizedVisitsCount === 0 && proposalsCount === 0;
+
+          // Fallbacks for empty states to make sure chart is visually pleasing
+          const chartRealizedVisits = isNoData ? 10 : realizedVisitsCount;
+          const chartProposals = isNoData ? 4 : proposalsCount;
+
+          const conversionRate = chartRealizedVisits > 0 
+            ? Math.round((chartProposals / chartRealizedVisits) * 100) 
+            : 0;
+
+          // Recharts Data
+          const conversionData = [
+            { name: "Propostas Geradas", value: chartProposals, color: "#004d3e" },
+            { name: "Visitas sem Proposta", value: Math.max(0, chartRealizedVisits - chartProposals), color: "#cfaf5c" }
+          ];
+
+          return (
+            <div className="bg-surface-container-lowest p-6 rounded-2xl border border-outline-variant/30 shadow-sm flex flex-col justify-between text-left relative overflow-hidden">
+              {isNoData && (
+                <div className="absolute top-3 right-3">
+                  <span className="px-2.5 py-0.5 bg-amber-500/10 text-amber-800 rounded-full font-black text-[9px] uppercase tracking-wider border border-amber-500/20">
+                    Modo Demonstrativo
+                  </span>
+                </div>
+              )}
+
+              <div>
+                <div className="pb-3 border-b border-outline-variant/30">
+                  <h3 className="font-display text-title-md font-bold text-primary flex items-center gap-2">
+                    <span className="p-1.5 bg-primary/10 rounded-lg">
+                      <Percent className="w-5 h-5 text-primary" />
+                    </span>
+                    Eficiência de Conversão
+                  </h3>
+                </div>
+
+                <div className="mt-4 flex flex-col sm:flex-row items-center gap-6">
+                  {/* Recharts Donut Chart Container */}
+                  <div className="relative w-40 h-40 flex items-center justify-center shrink-0 mx-auto sm:mx-0">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={conversionData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={55}
+                          outerRadius={75}
+                          paddingAngle={3}
+                          dataKey="value"
+                        >
+                          {conversionData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip 
+                          formatter={(value: any, name: any) => [`${value} itens`, name]}
+                          contentStyle={{ backgroundColor: "#fff", borderRadius: "12px", border: "1px solid #e2e8f0", fontSize: "11px" }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    
+                    {/* Centered Conversion Rate */}
+                    <div className="absolute text-center flex flex-col items-center justify-center pointer-events-none">
+                      <span className="text-3xl font-black text-primary font-display leading-none">
+                        {conversionRate}%
+                      </span>
+                      <span className="text-[9px] font-bold text-on-surface-variant/80 uppercase tracking-wider mt-1">
+                        Conversão
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Statistics Details */}
+                  <div className="flex-1 space-y-3.5 w-full">
+                    <p className="text-xs text-on-surface-variant font-medium leading-relaxed">
+                      Medidor de eficiência comercial. Mostra a porcentagem de visitas presenciais concluídas que avançaram para uma proposta comercial formalizada.
+                    </p>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs font-bold text-on-surface pb-1.5 border-b border-outline-variant/10">
+                        <span className="flex items-center gap-1.5 text-on-surface-variant font-medium">
+                          <span className="w-2.5 h-2.5 rounded-full bg-[#004d3e]"></span>
+                          Propostas Criadas
+                        </span>
+                        <span>{proposalsCount} {proposalsCount === 1 ? "proposta" : "propostas"}</span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs font-bold text-on-surface pb-1.5 border-b border-outline-variant/10">
+                        <span className="flex items-center gap-1.5 text-on-surface-variant font-medium">
+                          <span className="w-2.5 h-2.5 rounded-full bg-[#cfaf5c]"></span>
+                          Visitas Realizadas
+                        </span>
+                        <span>{realizedVisitsCount} {realizedVisitsCount === 1 ? "visita" : "visitas"}</span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs font-bold text-on-surface">
+                        <span className="flex items-center gap-1.5 text-on-surface-variant font-medium">
+                          Total Geral de Visitas
+                        </span>
+                        <span className="text-primary font-mono">{totalVisitsCount}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {isNoData ? (
+                <div className="mt-5 p-3 bg-amber-500/5 rounded-xl border border-dashed border-amber-500/20 text-[11px] text-amber-800 font-medium">
+                  💡 Cadastre e execute visitas com seus clientes, depois gere propostas oficiais na aba de Negociações para calcular sua taxa de conversão real de forma automática!
+                </div>
+              ) : (
+                <div className="mt-5 p-3 bg-primary/5 rounded-xl border border-primary/10 text-[11px] text-primary font-bold">
+                  ⚡ {conversionRate >= 50 
+                    ? "Excelente ritmo de conversão! Suas visitas estão gerando propostas de alta aderência." 
+                    : "Dica: Melhore a qualificação dos clientes antes das visitas para elevar sua taxa de proposta."}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </section>
 
       {/* SEÇÃO IMÓVEIS RECENTES (CARROUSEL HORIZONTAL) */}
@@ -1404,6 +1644,71 @@ export default function DashboardView({
           </div>
         )}
       </section>
+
+      {/* DIÁLOGO DE EDIÇÃO DE META DE VGV */}
+      <AnimatePresence>
+        {isEditingGoal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-surface w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden border border-outline-variant/30 flex flex-col"
+            >
+              <header className="px-6 py-4 border-b border-outline-variant/40 flex justify-between items-center bg-white">
+                <h3 className="font-display font-bold text-title-md text-primary">
+                  Ajustar Meta ({goalPeriod})
+                </h3>
+                <button 
+                  type="button"
+                  onClick={() => setIsEditingGoal(false)} 
+                  className="p-1.5 rounded-full hover:bg-surface-container cursor-pointer text-on-surface-variant"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </header>
+
+              <form onSubmit={handleSaveGoal} className="p-6 space-y-4 bg-surface-container-lowest text-left">
+                <p className="text-xs text-on-surface-variant">
+                  Insira o valor da sua meta de faturamento em VGV (Valor Geral de Vendas) para o período {goalPeriod}.
+                </p>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-bold text-primary uppercase">Valor da Meta (R$)</label>
+                  <input
+                    type="text"
+                    value={tempGoalInput}
+                    onChange={(e) => setTempGoalInput(e.target.value.replace(/[^\d]/g, ""))}
+                    placeholder="Ex: 5000000"
+                    className="h-11 px-3 border border-outline-variant bg-white rounded-lg text-sm w-full font-mono font-bold text-on-surface"
+                    autoFocus
+                  />
+                  <span className="text-[10px] text-on-surface-variant/70 mt-1">
+                    Valor atual formatado: <span className="font-bold text-primary">{Number(tempGoalInput || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })}</span>
+                  </span>
+                </div>
+
+                <div className="flex justify-end gap-3 pt-4 border-t border-outline-variant/30">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingGoal(false)}
+                    className="px-4 py-2.5 bg-surface-container hover:bg-surface-container-high text-on-surface-variant rounded-xl font-bold text-xs cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 bg-primary text-on-primary hover:bg-primary/95 rounded-xl font-bold text-xs shadow-md cursor-pointer flex items-center gap-1"
+                  >
+                    <Check className="w-4 h-4" />
+                    Salvar Meta
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
     </div>
   );

@@ -358,11 +358,18 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newClient)
       });
-      const data = await res.json();
-      setClients(prev => [data, ...prev]);
-    } catch (err) {
-      console.error(err);
-      throw err;
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(data?.error || "Erro ao salvar cliente no Supabase.");
+      }
+      if (!data?.id && !data?._id) {
+        throw new Error("Cliente não foi salvo corretamente.");
+      }
+      setClients((prev) => [data, ...prev]);
+    } catch (error: any) {
+      console.error(error);
+      alert(error.message);
+      throw error;
     }
   };
 

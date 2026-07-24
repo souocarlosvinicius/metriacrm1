@@ -92,15 +92,11 @@ export default function App() {
   const [currentOrg, setCurrentOrg] = useState<any>(null);
 
   const fetchCurrentOrg = async (orgId: string | undefined) => {
-    if (!orgId) {
-      setCurrentOrg(null);
-      return;
-    }
     try {
       const res = await apiFetch("/api/organizations");
       if (res.ok) {
         const orgs = await res.json();
-        const activeOrg = orgs.find((o: any) => o.id === orgId);
+        const activeOrg = orgs.find((o: any) => o.id === orgId) || orgs[0];
         if (activeOrg) {
           setCurrentOrg(activeOrg);
         }
@@ -111,11 +107,26 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (currentUser?.defaultOrganizationId) {
-      fetchCurrentOrg(currentUser.defaultOrganizationId);
+    if (currentUser) {
+      fetchCurrentOrg(currentUser.defaultOrganizationId || "demo-org-id");
     } else {
       setCurrentOrg(null);
     }
+
+    const handlePlanChange = (event: any) => {
+      const detail = event.detail;
+      if (currentUser?.defaultOrganizationId) {
+        fetchCurrentOrg(currentUser.defaultOrganizationId);
+      }
+      if (detail?.plan && currentOrg) {
+        setCurrentOrg((prev: any) => (prev ? { ...prev, plan: detail.plan } : prev));
+      }
+    };
+
+    window.addEventListener("organization-plan-changed", handlePlanChange);
+    return () => {
+      window.removeEventListener("organization-plan-changed", handlePlanChange);
+    };
   }, [currentUser]);
 
   const planAccess = useCurrentPlan(currentOrg, {

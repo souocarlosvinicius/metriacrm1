@@ -277,23 +277,41 @@ export default function SettingsView({
         body: JSON.stringify({ plan: targetPlan })
       });
 
+      const data = await res.json().catch(() => ({}));
+
       if (!res.ok) {
-        const data = await res.json();
         throw new Error(data.error || "Erro ao atualizar plano.");
       }
 
-      setPlanSuccessMsg(`Plano alterado com sucesso para ${targetPlan === "beta" ? "Plano Beta" : targetPlan === "start" ? "Plano Start" : targetPlan === "pro" ? "Plano Pro" : targetPlan === "max" ? "Plano Max" : "Plano PRO MAX"}! Os limites foram recalculados.`);
-      
-      // Update local state
-      setOrgPlan(targetPlan);
-      
-      // Reload usage stats
+      // Verificação do plano retornado pela API para garantir sincronização do estado local
+      const confirmedPlan = data.plan || targetPlan;
+      if (data.plan && data.plan !== targetPlan) {
+        console.warn(`[Plan Sync Check] O plano retornado pela API (${data.plan}) diverge do solicitado (${targetPlan}). Sincronizando com o plano retornado pelo servidor.`);
+      }
+
+      // 1. Atualizar o estado do plano no componente local
+      setOrgPlan(confirmedPlan);
+
+      // 2. Recarregar os dados da assinatura e limites da organização a partir do servidor
       await fetchOrgSubscription();
 
-      // Trigger user update to refresh context
+      // 3. Disparar o evento global de sincronização do plano para todos os ouvintes
+      window.dispatchEvent(new CustomEvent("organization-plan-changed", { detail: { orgId, plan: confirmedPlan } }));
+
+      // 4. Notificar a atualização do usuário para recarregar contextos
       onUpdateSuccess({
         ...currentUser,
       });
+
+      const planNameMap: Record<string, string> = {
+        beta: "Plano Beta",
+        start: "Plano Start",
+        pro: "Plano Pro",
+        max: "Plano Max",
+        pro_max: "Plano PRO MAX"
+      };
+
+      setPlanSuccessMsg(`Plano alterado com sucesso para ${planNameMap[confirmedPlan] || confirmedPlan}! Os limites e permissões da sua conta foram sincronizados com sucesso.`);
     } catch (err: any) {
       setPlanErrorMsg(err.message || "Erro de rede ao atualizar o plano.");
     } finally {

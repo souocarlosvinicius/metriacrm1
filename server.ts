@@ -416,6 +416,63 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
   }
 });
 
+// UPDATE PLAN FOR ORGANIZATION
+app.put("/api/organizations/:id/plan", requireAuth, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não está configurado." });
+  }
+
+  const orgId = req.params.id;
+  const { plan } = req.body || {};
+  const validPlans = ["beta", "start", "pro", "max", "pro_max"];
+
+  console.log("[SERVER PLAN UPDATE REQUEST VALIDATION]", {
+    timestamp: new Date().toISOString(),
+    userId: req.userId,
+    orgId,
+    targetPlan: plan,
+    payload: req.body
+  });
+
+  if (!validPlans.includes(plan)) {
+    console.error(`[SERVER PLAN UPDATE ERROR] Plano inválido recebido: "${plan}".`);
+    return res.status(400).json({ error: `Plano inválido: ${plan}` });
+  }
+
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const { data: updatedOrg, error: updateErr } = await supabaseAdmin
+      .from("organizations")
+      .update({
+        plan,
+        subscription_status: "active"
+      })
+      .eq("id", orgId)
+      .select()
+      .maybeSingle();
+
+    if (updateErr) {
+      console.error("[SERVER PLAN UPDATE ERROR]", updateErr);
+      return res.status(400).json({ error: updateErr.message });
+    }
+
+    console.log("[SERVER PLAN UPDATE SUCCESS] Plano atualizado para:", updatedOrg || { id: orgId, plan });
+
+    return res.json({
+      id: updatedOrg?.id || orgId,
+      name: updatedOrg?.name,
+      tradeName: updatedOrg?.trade_name,
+      plan: updatedOrg?.plan || plan,
+      subscriptionStatus: updatedOrg?.subscription_status || "active"
+    });
+  } catch (err: any) {
+    console.error("Erro no endpoint PUT /api/organizations/:id/plan:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // GENERATE DESCRIPTION
 app.post("/api/ai/generate-description", requireAuth, requireGeminiPlan, async (req, res) => {
   if (!ai) {

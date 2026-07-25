@@ -2465,6 +2465,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
   if (pathname === "/api/auth/logout") {
     localStorage.removeItem("vega_crm_user");
+    localStorage.removeItem("vega_crm_user_timestamp");
     return mockResponse({ success: true });
   }
 
@@ -2879,6 +2880,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
     const user = getDemoUser();
     const updatedUser = { ...user, ...body, id };
     localStorage.setItem("vega_crm_user", JSON.stringify(updatedUser));
+    localStorage.setItem("vega_crm_user_timestamp", Date.now().toString());
     return mockResponse(updatedUser);
   }
 

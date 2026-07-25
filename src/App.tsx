@@ -20,6 +20,41 @@ import LandingPage from "./components/LandingPage";
 import { apiFetch } from "./api";
 import { useCurrentPlan } from "./hooks/useCurrentPlan";
 
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 horas de inatividade
+const SESSION_TIMESTAMP_KEY = "vega_crm_user_timestamp";
+
+export function saveUserSession(user: any) {
+  localStorage.setItem("vega_crm_user", JSON.stringify(user));
+  localStorage.setItem(SESSION_TIMESTAMP_KEY, Date.now().toString());
+}
+
+export function clearUserSession() {
+  localStorage.removeItem("vega_crm_user");
+  localStorage.removeItem(SESSION_TIMESTAMP_KEY);
+}
+
+export function checkAndCleanExpiredSession(): boolean {
+  const savedUser = localStorage.getItem("vega_crm_user");
+  if (!savedUser) {
+    localStorage.removeItem(SESSION_TIMESTAMP_KEY);
+    return false;
+  }
+
+  const savedTimestamp = localStorage.getItem(SESSION_TIMESTAMP_KEY);
+  if (savedTimestamp) {
+    const elapsed = Date.now() - parseInt(savedTimestamp, 10);
+    if (isNaN(elapsed) || elapsed > SESSION_TTL_MS) {
+      console.warn(`[Auth Diagnostic TTL] Sessão local expirou por inatividade (${Math.round((elapsed || SESSION_TTL_MS) / (1000 * 60 * 60))}h). Limpando 'vega_crm_user'.`);
+      clearUserSession();
+      return true;
+    }
+  } else {
+    localStorage.setItem(SESSION_TIMESTAMP_KEY, Date.now().toString());
+  }
+
+  return false;
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -30,41 +65,89 @@ export default function App() {
   // Check session on mount
   useEffect(() => {
     const handleUnauthorized = () => {
+      clearUserSession();
       setCurrentUser(null);
     };
     window.addEventListener("auth_unauthorized", handleUnauthorized);
 
+    const validateDemoUser = (userObj: any): boolean => {
+      if (!userObj || typeof userObj !== "object") return false;
+      if (!userObj.isDemo) return false;
+      const hasId = typeof userObj.id === "string" && userObj.id.trim().length > 0;
+      const hasIdentity = (typeof userObj.name === "string" && userObj.name.trim().length > 0) ||
+                          (typeof userObj.username === "string" && userObj.username.trim().length > 0) ||
+                          (typeof userObj.email === "string" && userObj.email.trim().length > 0);
+      return Boolean(hasId && hasIdentity);
+    };
+
     const verifySession = async () => {
       try {
+        console.log("[Auth Diagnostic] Verificando estado da sessão e TTL na inicialização...");
+        
+        // Verificação de TTL (24h de inatividade) para a entrada vega_crm_user em localStorage
+        const wasExpired = checkAndCleanExpiredSession();
+        if (wasExpired) {
+          console.log("[Auth Diagnostic TTL] Sessão expirada no localStorage foi removida.");
+        }
+
         const res = await apiFetch("/api/auth/me");
         if (res.ok) {
           const user = await res.json();
           if (user) {
             delete user.sessionToken;
           }
-          setCurrentUser(user);
-          localStorage.setItem("vega_crm_user", JSON.stringify(user));
+          if (user && user.isDemo) {
+            console.log("[Auth Diagnostic] Sessão de demonstração detectada na API.", user);
+            if (validateDemoUser(user)) {
+              console.log("[Auth Diagnostic] Estrutura do usuário de demonstração validada com sucesso.");
+              setCurrentUser(user);
+              saveUserSession(user);
+            } else {
+              console.warn("[Auth Diagnostic] Estrutura do usuário demo inválida. Limpando sessão.");
+              clearUserSession();
+              setCurrentUser(null);
+            }
+          } else if (user) {
+            setCurrentUser(user);
+            saveUserSession(user);
+          } else {
+            setCurrentUser(null);
+            clearUserSession();
+          }
         } else {
           setCurrentUser(null);
-          localStorage.removeItem("vega_crm_user");
+          clearUserSession();
         }
       } catch (err) {
         console.error("Erro ao verificar sessão:", err);
-        // Only fallback to localStorage if they are in offline Demo Mode.
-        // Otherwise, never trust local storage, force logout to keep it secure.
-        const saved = localStorage.getItem("vega_crm_user");
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved);
-            if (parsed && parsed.isDemo) {
-              setCurrentUser(parsed);
-            } else {
+        // Fallback to localStorage for offline / demo mode
+        const isExpired = checkAndCleanExpiredSession();
+        if (!isExpired) {
+          const saved = localStorage.getItem("vega_crm_user");
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              if (parsed && parsed.isDemo) {
+                console.log("[Auth Diagnostic] Sessão de demonstração local detectada no fallback de rede.", parsed);
+                if (validateDemoUser(parsed)) {
+                  console.log("[Auth Diagnostic] Estrutura do usuário de demonstração local validada.");
+                  setCurrentUser(parsed);
+                  localStorage.setItem(SESSION_TIMESTAMP_KEY, Date.now().toString());
+                } else {
+                  console.warn("[Auth Diagnostic] Estrutura do usuário demo em localStorage corrompida. Removendo sessão.");
+                  setCurrentUser(null);
+                  clearUserSession();
+                }
+              } else {
+                setCurrentUser(null);
+                clearUserSession();
+              }
+            } catch (e) {
               setCurrentUser(null);
-              localStorage.removeItem("vega_crm_user");
+              clearUserSession();
             }
-          } catch (e) {
+          } else {
             setCurrentUser(null);
-            localStorage.removeItem("vega_crm_user");
           }
         } else {
           setCurrentUser(null);
@@ -227,7 +310,7 @@ export default function App() {
       ) {
         console.warn("Sessão expirada ou não autorizado detectada. Redirecionando para login.");
         setCurrentUser(null);
-        localStorage.removeItem("vega_crm_user");
+        clearUserSession();
         return;
       }
 
@@ -278,7 +361,7 @@ export default function App() {
             if (userRes.ok) {
               const updatedUser = await userRes.json();
               setCurrentUser(updatedUser);
-              localStorage.setItem("vega_crm_user", JSON.stringify(updatedUser));
+              saveUserSession(updatedUser);
             }
             // Clean up URL query parameters
             window.history.replaceState({}, document.title, window.location.pathname);
@@ -671,7 +754,7 @@ export default function App() {
       sessionToken: "demo_token_123"
     };
     
-    localStorage.setItem("vega_crm_user", JSON.stringify(demoUser));
+    saveUserSession(demoUser);
     setCurrentUser(demoUser);
   };
 
@@ -708,7 +791,7 @@ export default function App() {
           setShowAuth(false);
         }}
         onLoginSuccess={(user) => {
-          localStorage.setItem("vega_crm_user", JSON.stringify(user));
+          saveUserSession(user);
           setCurrentUser(user);
         }}
       />
@@ -716,7 +799,7 @@ export default function App() {
   }
 
   const handleOnboardingComplete = (updatedUser: User) => {
-    localStorage.setItem("vega_crm_user", JSON.stringify(updatedUser));
+    saveUserSession(updatedUser);
     setCurrentUser(updatedUser);
   };
 
@@ -1216,7 +1299,7 @@ export default function App() {
                 clients={clients}
                 tasks={tasks}
                 onUpdateSuccess={(updatedUser) => {
-                  localStorage.setItem("vega_crm_user", JSON.stringify(updatedUser));
+                  saveUserSession(updatedUser);
                   setCurrentUser(updatedUser);
                 }}
                 onLogout={async () => {
@@ -1225,7 +1308,7 @@ export default function App() {
                   } catch (err) {
                     console.error("Erro ao realizar logout:", err);
                   }
-                  localStorage.removeItem("vega_crm_user");
+                  clearUserSession();
                   setCurrentUser(null);
                   setShowAuth(false);
                 }}
@@ -1509,7 +1592,7 @@ export default function App() {
             user={currentUser}
             onClose={() => setShowProfileModal(false)}
             onUpdateSuccess={(updatedUser) => {
-              localStorage.setItem("vega_crm_user", JSON.stringify(updatedUser));
+              saveUserSession(updatedUser);
               setCurrentUser(updatedUser);
             }}
             onLogout={async () => {
@@ -1518,7 +1601,7 @@ export default function App() {
               } catch (err) {
                 console.error("Erro ao realizar logout:", err);
               }
-              localStorage.removeItem("vega_crm_user");
+              clearUserSession();
               setCurrentUser(null);
               setShowProfileModal(false);
             }}

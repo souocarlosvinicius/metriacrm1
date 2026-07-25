@@ -110,6 +110,7 @@ export default function LoginView({ onLoginSuccess, initialRegister = false, onB
     
     // Save to localStorage immediately so that API interceptor is active
     localStorage.setItem("vega_crm_user", JSON.stringify(demoUser));
+    localStorage.setItem("vega_crm_user_timestamp", Date.now().toString());
     
     // Trigger login success in App
     onLoginSuccess(demoUser);

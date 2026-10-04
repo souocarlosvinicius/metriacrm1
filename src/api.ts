@@ -2469,6 +2469,12 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
     return mockResponse({ success: true });
   }
 
+  // LOGS ENDPOINT (Central Error Monitoring)
+  if (pathname === "/api/logs" && method === "POST") {
+    console.log(`[CLIENT MONITORING LOG - ${body?.level?.toUpperCase() || "ERROR"}]`, body?.message, body?.stack || "");
+    return mockResponse({ success: true, timestamp: new Date().toISOString() });
+  }
+
   // 1. SYSTEM STATUS
   if (pathname === "/api/status") {
     return mockResponse({

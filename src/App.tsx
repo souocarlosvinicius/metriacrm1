@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { LayoutDashboard, Home, Users, CalendarDays, Bell, Sparkles, Search, X, FolderSync, Handshake, Settings, ClipboardCheck, AlertTriangle, Clock, Check, Users2, TrendingUp } from "lucide-react";
+import { LayoutDashboard, Home, Users, CalendarDays, Bell, Sparkles, Search, X, FolderSync, Handshake, Settings, ClipboardCheck, AlertTriangle, Clock, Check, Users2, TrendingUp, Keyboard } from "lucide-react";
 import { Property, Client, Task, DBStatus, User, Proposal, Visit } from "./types";
 import DashboardView from "./components/DashboardView";
 import PropertiesView from "./components/PropertiesView";
@@ -17,8 +17,31 @@ import LoginView from "./components/LoginView";
 import UserProfileModal from "./components/UserProfileModal";
 import OnboardingModal from "./components/OnboardingModal";
 import LandingPage from "./components/LandingPage";
+import ErrorBoundary from "./components/ErrorBoundary";
+import { setupGlobalErrorMonitoring, logError } from "./utils/logger";
 import { apiFetch } from "./api";
 import { useCurrentPlan } from "./hooks/useCurrentPlan";
+import * as Sentry from "@sentry/react";
+
+// Initialize Sentry SDK for real-time frontend exception monitoring
+const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN || "";
+
+if (typeof window !== "undefined") {
+  Sentry.init({
+    dsn: SENTRY_DSN || undefined,
+    environment: import.meta.env.MODE || "production",
+    tracesSampleRate: 1.0,
+    beforeSend(event, hint) {
+      // Filter out harmless local development / websocket connection noise
+      const error = hint?.originalException;
+      const message = typeof error === "string" ? error : (error as any)?.message || event.message;
+      if (message && (message.includes("vite") || message.includes("websocket"))) {
+        return null;
+      }
+      return event;
+    },
+  });
+}
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 horas de inatividade
 const SESSION_TIMESTAMP_KEY = "vega_crm_user_timestamp";
@@ -55,12 +78,40 @@ export function checkAndCleanExpiredSession(): boolean {
   return false;
 }
 
-export default function App() {
+export function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [authDefaultToRegister, setAuthDefaultToRegister] = useState(false);
+
+  // Setup unhandled error monitoring and Sentry SDK integration
+  useEffect(() => {
+    // Activates both centralized API logging and Sentry global listener handlers
+    const cleanupLogger = setupGlobalErrorMonitoring();
+
+    // Sentry runtime tagging for real-time dashboard categorization
+    Sentry.setTag("crm_app", "metria_crm");
+    Sentry.setTag("environment", import.meta.env.MODE || "production");
+
+    return () => {
+      cleanupLogger();
+    };
+  }, []);
+
+  // Sync current user session with Sentry for incident triage
+  useEffect(() => {
+    if (currentUser) {
+      Sentry.setUser({
+        id: currentUser.id,
+        email: currentUser.email,
+        username: currentUser.name || currentUser.username,
+        role: currentUser.role,
+      });
+    } else {
+      Sentry.setUser(null);
+    }
+  }, [currentUser]);
 
   // Check session on mount
   useEffect(() => {
@@ -222,11 +273,146 @@ export default function App() {
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
 
-  // Global search states
+  // Global search states & refs
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const [showSearchResults, setShowSearchResults] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [selectedTaskDate, setSelectedTaskDate] = useState<string>(() => new Date().toISOString().split("T")[0]);
   const [prefilledClientForTask, setPrefilledClientForTask] = useState<Client | null>(null);
+
+  // Global Keyboard Shortcuts Listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!currentUser) return;
+
+      const isModifier = e.ctrlKey || e.metaKey;
+      const target = e.target as HTMLElement | null;
+      const isInput = Boolean(
+        target && (
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable
+        )
+      );
+
+      // Escape key
+      if (e.key === "Escape") {
+        if (showSearchResults) {
+          setShowSearchResults(false);
+          searchInputRef.current?.blur();
+        }
+        if (showShortcutsModal) {
+          setShowShortcutsModal(false);
+        }
+        return;
+      }
+
+      // Ctrl+K / Cmd+K -> Focus Global Search
+      if (isModifier && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        setShowSearchResults(true);
+        return;
+      }
+
+      // Ctrl+/ or Cmd+/ or '?' -> Toggle Shortcuts Help Modal
+      if ((isModifier && (e.key === "/" || e.key === "?")) || (!isInput && e.key === "?")) {
+        e.preventDefault();
+        setShowShortcutsModal((prev) => !prev);
+        return;
+      }
+
+      // Navigation Shortcuts
+      // Skip single-key typing inside form inputs
+      if (isInput) {
+        if (!e.altKey && !(isModifier && e.shiftKey) && !(isModifier && (e.key === "d" || e.key === "D" || e.key === "t" || e.key === "T"))) {
+          return;
+        }
+      }
+
+      const keyLower = e.key.toLowerCase();
+
+      // Dashboard: Ctrl+D, Ctrl+Shift+D, Alt+D, Alt+1
+      if ((isModifier && keyLower === "d") || (e.altKey && (keyLower === "d" || keyLower === "1"))) {
+        e.preventDefault();
+        setActiveTab("dashboard");
+        setShowSearchResults(false);
+        return;
+      }
+
+      // Tasks: Ctrl+T, Ctrl+Shift+T, Alt+T, Alt+4
+      if ((isModifier && keyLower === "t") || (e.altKey && (keyLower === "t" || keyLower === "4"))) {
+        e.preventDefault();
+        setActiveTab("tasks");
+        setShowSearchResults(false);
+        return;
+      }
+
+      // Imóveis (Properties): Alt+2, Ctrl+Shift+P, Alt+P
+      if ((e.altKey && (keyLower === "2" || keyLower === "p")) || (isModifier && e.shiftKey && keyLower === "p")) {
+        e.preventDefault();
+        setActiveTab("properties");
+        setShowSearchResults(false);
+        return;
+      }
+
+      // Clientes (Clients): Alt+3, Ctrl+Shift+C, Alt+C
+      if ((e.altKey && (keyLower === "3" || keyLower === "c")) || (isModifier && e.shiftKey && keyLower === "c")) {
+        e.preventDefault();
+        setActiveTab("clients");
+        setShowSearchResults(false);
+        return;
+      }
+
+      // Funil (Pipeline): Alt+5, Ctrl+Shift+F, Alt+F
+      if ((e.altKey && (keyLower === "5" || keyLower === "f")) || (isModifier && e.shiftKey && keyLower === "f")) {
+        e.preventDefault();
+        setActiveTab("pipeline");
+        setShowSearchResults(false);
+        return;
+      }
+
+      // Negócios (Transactions): Alt+6, Ctrl+Shift+G, Alt+G
+      if ((e.altKey && (keyLower === "6" || keyLower === "g")) || (isModifier && e.shiftKey && keyLower === "g")) {
+        e.preventDefault();
+        setActiveTab("transactions");
+        setShowSearchResults(false);
+        return;
+      }
+
+      // Configurações (Settings): Alt+7, Ctrl+Shift+S, Alt+S
+      if ((e.altKey && (keyLower === "7" || keyLower === "s")) || (isModifier && e.shiftKey && keyLower === "s")) {
+        e.preventDefault();
+        setActiveTab("settings");
+        setShowSearchResults(false);
+        return;
+      }
+
+      // Inteligência / IA: Alt+8, Ctrl+Shift+I, Alt+I
+      if ((e.altKey && (keyLower === "8" || keyLower === "i")) || (isModifier && e.shiftKey && keyLower === "i")) {
+        e.preventDefault();
+        setActiveTab("ai");
+        setShowSearchResults(false);
+        return;
+      }
+
+      // Equipe (Team): Alt+9, Ctrl+Shift+M, Alt+M
+      if ((e.altKey && (keyLower === "9" || keyLower === "m")) || (isModifier && e.shiftKey && keyLower === "m")) {
+        e.preventDefault();
+        setActiveTab("team");
+        setShowSearchResults(false);
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [currentUser, showSearchResults, showShortcutsModal]);
 
   // Simple Notification System
   const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
@@ -843,6 +1029,7 @@ export default function App() {
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/60" />
             <input
+              ref={searchInputRef}
               type="text"
               placeholder="Buscar imóveis, clientes, tarefas..."
               value={globalSearchQuery}
@@ -851,15 +1038,22 @@ export default function App() {
                 setShowSearchResults(true);
               }}
               onFocus={() => setShowSearchResults(true)}
-              className="w-full pl-9 pr-8 py-1.5 text-xs md:text-sm bg-surface-container-high border border-outline-variant/40 rounded-full focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all text-on-surface"
+              className="w-full pl-9 pr-14 py-1.5 text-xs md:text-sm bg-surface-container-high border border-outline-variant/40 rounded-full focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all text-on-surface"
             />
+            {!globalSearchQuery && (
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none hidden sm:flex items-center gap-0.5">
+                <kbd className="px-1.5 py-0.5 text-[10px] font-mono font-medium text-on-surface-variant/70 bg-surface-container-highest border border-outline-variant/60 rounded shadow-2xs">
+                  ⌘K
+                </kbd>
+              </div>
+            )}
             {globalSearchQuery && (
               <button
                 onClick={() => {
                   setGlobalSearchQuery("");
                   setShowSearchResults(false);
                 }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant/60 hover:text-on-surface"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant/60 hover:text-on-surface cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -984,7 +1178,15 @@ export default function App() {
         </div>
 
         {/* Action icons & Profile */}
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-2 md:gap-3 shrink-0">
+          <button
+            onClick={() => setShowShortcutsModal(true)}
+            className="p-2 rounded-full hover:bg-surface-container-high transition-colors text-on-surface-variant cursor-pointer relative"
+            title="Atalhos de Teclado (Ctrl+/)"
+          >
+            <Keyboard className="w-5 h-5" />
+          </button>
+
           <div className="relative notification-container">
             <button 
               onClick={() => setShowNotificationDropdown(!showNotificationDropdown)}
@@ -1609,6 +1811,142 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* Keyboard Shortcuts Helper Modal */}
+      <AnimatePresence>
+        {showShortcutsModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              transition={{ duration: 0.15 }}
+              className="bg-surface rounded-3xl border border-outline-variant shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]"
+            >
+              <div className="p-5 border-b border-outline-variant/40 bg-surface-container-low flex justify-between items-center">
+                <div className="flex items-center gap-2.5">
+                  <span className="p-2 bg-primary/10 rounded-xl text-primary">
+                    <Keyboard className="w-5 h-5" />
+                  </span>
+                  <div>
+                    <h3 className="font-bold text-on-surface text-base">Atalhos de Teclado</h3>
+                    <p className="text-xs text-on-surface-variant">Navegação rápida e busca para produtividade</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowShortcutsModal(false)}
+                  className="p-1.5 rounded-full hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-5 overflow-y-auto space-y-5 text-sm text-on-surface">
+                {/* Section: Ações Globais */}
+                <div>
+                  <h4 className="text-xs font-bold text-primary uppercase tracking-wider mb-2">Ações Globais</h4>
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center py-2 px-3 rounded-xl bg-surface-container-low">
+                      <span className="text-xs font-semibold text-on-surface">Focar Busca Global</span>
+                      <div className="flex items-center gap-1 font-mono text-xs">
+                        <kbd className="px-2 py-0.5 bg-surface-container-highest border border-outline-variant/60 rounded font-semibold text-primary">Ctrl + K</kbd>
+                        <span className="text-on-surface-variant text-[10px]">ou</span>
+                        <kbd className="px-2 py-0.5 bg-surface-container-highest border border-outline-variant/60 rounded font-semibold text-primary">⌘ + K</kbd>
+                      </div>
+                    </div>
+                    <div className="flex justify-between items-center py-2 px-3 rounded-xl bg-surface-container-low">
+                      <span className="text-xs font-semibold text-on-surface">Abrir Guia de Atalhos</span>
+                      <div className="flex items-center gap-1 font-mono text-xs">
+                        <kbd className="px-2 py-0.5 bg-surface-container-highest border border-outline-variant/60 rounded font-semibold text-primary">Ctrl + /</kbd>
+                        <span className="text-on-surface-variant text-[10px]">ou</span>
+                        <kbd className="px-2 py-0.5 bg-surface-container-highest border border-outline-variant/60 rounded font-semibold text-primary">?</kbd>
+                      </div>
+                    </div>
+                    <div className="flex justify-between items-center py-2 px-3 rounded-xl bg-surface-container-low">
+                      <span className="text-xs font-semibold text-on-surface">Fechar Menus e Modais</span>
+                      <kbd className="px-2 py-0.5 bg-surface-container-highest border border-outline-variant/60 rounded font-mono text-xs font-semibold text-on-surface-variant">Esc</kbd>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section: Navegação Principal */}
+                <div>
+                  <h4 className="text-xs font-bold text-primary uppercase tracking-wider mb-2">Navegação Principal</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {[
+                      { label: "Dashboard", primary: "Ctrl + D", alt: "Alt + 1" },
+                      { label: "Tarefas", primary: "Ctrl + T", alt: "Alt + 4" },
+                      { label: "Imóveis", primary: "Alt + 2", alt: "Ctrl + Shift + P" },
+                      { label: "Clientes", primary: "Alt + 3", alt: "Ctrl + Shift + C" },
+                      { label: "Funil de Vendas", primary: "Alt + 5", alt: "Ctrl + Shift + F" },
+                      { label: "Negócios", primary: "Alt + 6", alt: "Ctrl + Shift + G" },
+                      { label: "Configurações", primary: "Alt + 7", alt: "Ctrl + Shift + S" },
+                      { label: "Inteligência IA", primary: "Alt + 8", alt: "Ctrl + Shift + I" },
+                      { label: "Equipe", primary: "Alt + 9", alt: "Ctrl + Shift + M" },
+                    ].map((item, idx) => (
+                      <div key={idx} className="flex justify-between items-center py-2 px-3 rounded-xl bg-surface-container-low">
+                        <span className="text-xs font-medium text-on-surface">{item.label}</span>
+                        <kbd className="px-1.5 py-0.5 bg-surface-container-highest border border-outline-variant/60 rounded font-mono text-[11px] font-semibold text-primary">
+                          {item.primary}
+                        </kbd>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 border-t border-outline-variant/40 bg-surface-container-low text-center">
+                <span className="text-xs text-on-surface-variant font-medium">
+                  Dica: Pressione <span className="font-mono font-bold text-primary">Alt + 1..9</span> para alternar rapidamente entre abas.
+                </span>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
     </div>
+  );
+}
+
+export default function RootApp() {
+  return (
+    <Sentry.ErrorBoundary
+      fallback={({ error, resetError }) => (
+        <div className="min-h-screen bg-surface flex items-center justify-center p-6 text-on-surface">
+          <div className="max-w-md w-full bg-surface-container-low border border-outline-variant/60 rounded-3xl p-8 shadow-2xl text-center">
+            <div className="w-14 h-14 mx-auto mb-4 bg-error/10 text-error rounded-2xl flex items-center justify-center">
+              <AlertTriangle className="w-8 h-8" />
+            </div>
+            <h2 className="text-xl font-bold mb-2 text-on-surface">Ops! Algo deu errado</h2>
+            <p className="text-sm text-on-surface-variant mb-6">
+              Ocorreu uma falha inesperada durante a execução do aplicativo. A falha foi capturada em tempo real pelo Sentry e registrada para análise.
+            </p>
+            {error && (
+              <div className="bg-surface-container-highest p-3 rounded-xl mb-6 text-left overflow-x-auto max-h-32 border border-outline-variant/40">
+                <code className="text-xs font-mono text-error leading-relaxed block">
+                  {(error as any)?.message || String(error)}
+                </code>
+              </div>
+            )}
+            <button
+              onClick={() => {
+                resetError();
+                window.location.reload();
+              }}
+              className="w-full py-3 px-4 bg-primary text-on-primary font-semibold text-sm rounded-xl hover:bg-primary/90 transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md"
+            >
+              Recarregar Aplicativo
+            </button>
+          </div>
+        </div>
+      )}
+      onError={(error, componentStack) => {
+        logError(error, { type: "sentry_react_root_boundary", componentStack });
+      }}
+    >
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </Sentry.ErrorBoundary>
   );
 }

@@ -212,6 +212,19 @@ const requireGeminiPlan = async (req: any, res: any, next: any) => {
   next();
 };
 
+// CENTRALIZED ERROR LOGS ENDPOINT
+app.post("/api/logs", (req, res) => {
+  const { level = "error", message, stack, url, userAgent, context, timestamp } = req.body || {};
+  const formattedTime = timestamp || new Date().toISOString();
+  console.log(`[CLIENT LOG - ${String(level).toUpperCase()}] [${formattedTime}] ${message || "Erro sem mensagem"}`);
+  if (url) console.log(`[CLIENT LOG URL] ${url}`);
+  if (stack) console.log(`[CLIENT LOG STACK] ${stack}`);
+  if (context && Object.keys(context).length > 0) {
+    console.log(`[CLIENT LOG CONTEXT]`, JSON.stringify(context));
+  }
+  return res.status(200).json({ success: true, timestamp: formattedTime });
+});
+
 // API STATUS
 app.get("/api/status", async (req, res) => {
   const tableStatus: any = {};

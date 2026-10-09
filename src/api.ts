@@ -1,67 +1,124 @@
 import { supabase } from "./lib/supabase";
 import { getInitialDemoData } from "./demoData";
+import { buildFactualDescription } from "./geminiLimits";
+import {
+  validateUploadFile,
+  parseDataUrl,
+  checkTenantQuota,
+  recordTenantStorageAdd,
+  buildStoragePath
+} from "./storageManager";
 
 function mapProfileToDB(user: any): any {
   if (!user) return null;
   const dbUser: any = {};
   
-  if (user.id !== undefined) dbUser.id = user.id;
-  if (user._id !== undefined && !user.id) dbUser.id = user._id;
-  if (user.name !== undefined) dbUser.name = user.name;
-  if (user.email !== undefined) dbUser.email = user.email;
+  if (user.id !== undefined && isValidUuid(user.id)) dbUser.id = user.id;
+  if (user.name !== undefined) dbUser.name = String(user.name).trim();
   if (user.avatarUrl !== undefined) dbUser.avatarUrl = user.avatarUrl;
-  if (user.role !== undefined) dbUser.role = user.role;
-  if (user.phone !== undefined) dbUser.phone = user.phone;
-  if (user.whatsapp !== undefined && !user.phone) dbUser.phone = user.whatsapp;
+  if (user.phone !== undefined) dbUser.phone = String(user.phone).trim();
+  if (user.whatsapp !== undefined && !user.phone) dbUser.phone = String(user.whatsapp).trim();
   
   if (user.onboardingCompleted !== undefined) {
-    dbUser.onboardingCompleted = user.onboardingCompleted;
+    dbUser.onboardingCompleted = Boolean(user.onboardingCompleted);
   }
   if (user.commercialName !== undefined) {
-    dbUser.commercialName = user.commercialName;
+    dbUser.commercialName = String(user.commercialName).trim();
   }
   if (user.creci !== undefined) {
-    dbUser.creci = user.creci;
+    dbUser.creci = String(user.creci).trim();
   }
   if (user.primaryCity !== undefined) {
-    dbUser.primaryCity = user.primaryCity;
+    dbUser.primaryCity = String(user.primaryCity).trim();
   }
   if (user.actingType !== undefined) {
     dbUser.actingType = user.actingType;
   }
-  if (user.defaultOrganizationId !== undefined) {
-    dbUser.default_organization_id = user.defaultOrganizationId;
+
+  // Commercial configurations (persisted safely with numeric and type validation)
+  if (user.defaultCommissionPercent !== undefined && user.defaultCommissionPercent !== null) {
+    const comm = Number(user.defaultCommissionPercent);
+    if (!isNaN(comm) && comm >= 0 && comm <= 100) {
+      dbUser.defaultCommissionPercent = comm;
+    }
   }
-  if (user.accountType !== undefined) {
-    dbUser.account_type = user.accountType;
+
+  if (Array.isArray(user.pipelineStages) && user.pipelineStages.length > 0) {
+    const validStages = user.pipelineStages.filter((s: any) => typeof s === "string" && s.trim().length > 0);
+    if (validStages.length > 0) {
+      dbUser.pipelineStages = validStages;
+    }
   }
-  if (user.currentRole !== undefined) {
-    dbUser.current_role = user.currentRole;
+
+  if (Array.isArray(user.leadSources) && user.leadSources.length > 0) {
+    const validSources = user.leadSources.filter((s: any) => typeof s === "string" && s.trim().length > 0);
+    if (validSources.length > 0) {
+      dbUser.leadSources = validSources;
+    }
+  }
+
+  if (user.messageTemplates !== undefined && typeof user.messageTemplates === "object" && user.messageTemplates !== null) {
+    dbUser.messageTemplates = user.messageTemplates;
   }
   
   dbUser.updatedAt = new Date().toISOString();
   return dbUser;
 }
 
+const DEFAULT_PIPELINE_STAGES = [
+  "Novo lead",
+  "Primeiro contato",
+  "Em atendimento",
+  "Imóvel enviado",
+  "Visita agendada",
+  "Visita realizada",
+  "Proposta enviada",
+  "Em negociação",
+  "Documentação",
+  "Contrato",
+  "Fechado",
+  "Perdido"
+];
+
+const DEFAULT_LEAD_SOURCES = [
+  "Indicação",
+  "Instagram",
+  "Facebook",
+  "OLX",
+  "Portal Imobiliário",
+  "Placa",
+  "WhatsApp",
+  "Tráfego Pago",
+  "Outro"
+];
+
 function mapProfileFromDB(dbUser: any): any {
   if (!dbUser) return null;
   return {
     id: dbUser.id,
-    username: dbUser.email?.split("@")[0] || "",
-    name: dbUser.name,
-    email: dbUser.email,
+    username: dbUser.email?.split("@")[0] || dbUser.username || "",
+    name: dbUser.name || "",
+    email: dbUser.email || "",
     avatarUrl: dbUser.avatarUrl || dbUser.avatar_url || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80",
     role: dbUser.role || "Corretor Sênior",
-    phone: dbUser.phone,
+    phone: dbUser.phone || "",
     onboardingCompleted: dbUser.onboardingCompleted !== undefined ? dbUser.onboardingCompleted : (dbUser.onboarding_completed !== undefined ? dbUser.onboarding_completed : false),
     commercialName: dbUser.commercialName || dbUser.commercial_name || "",
     creci: dbUser.creci || "",
     primaryCity: dbUser.primaryCity || dbUser.primary_city || "",
     actingType: dbUser.actingType || dbUser.acting_type || "Geral",
-    defaultCommissionPercent: 0,
-    pipelineStages: ['Novo', 'Em Atendimento', 'Visita Agendada', 'Proposta', 'Contrato', 'Ganho', 'Perdido'],
-    leadSources: ['Indicação', 'Instagram', 'Facebook', 'OLX', 'Portal Imobiliário', 'Placa', 'WhatsApp', 'Tráfego Pago', 'Outro'],
-    messageTemplates: {},
+    defaultCommissionPercent: dbUser.defaultCommissionPercent !== undefined && dbUser.defaultCommissionPercent !== null 
+      ? Number(dbUser.defaultCommissionPercent) 
+      : 5,
+    pipelineStages: Array.isArray(dbUser.pipelineStages) && dbUser.pipelineStages.length > 0 
+      ? dbUser.pipelineStages 
+      : DEFAULT_PIPELINE_STAGES,
+    leadSources: Array.isArray(dbUser.leadSources) && dbUser.leadSources.length > 0 
+      ? dbUser.leadSources 
+      : DEFAULT_LEAD_SOURCES,
+    messageTemplates: (typeof dbUser.messageTemplates === "object" && dbUser.messageTemplates !== null) 
+      ? dbUser.messageTemplates 
+      : {},
     createdAt: dbUser.createdAt || dbUser.created_at || new Date().toISOString(),
     updatedAt: dbUser.updatedAt || dbUser.updated_at || new Date().toISOString(),
     
@@ -154,9 +211,9 @@ export function clientFromDb(row: any): any {
   if (!row) return null;
   return {
     id: row.id,
-    userId: row.user_id || row.userId,
+    userId: row.userId || row.user_id,
     organizationId: row.organization_id || row.organizationId,
-    assignedTo: row.assigned_to || row.assignedTo || row.user_id || row.userId,
+    assignedTo: row.assigned_to || row.assignedTo || row.userId || row.user_id,
     createdBy: row.created_by || row.createdBy,
     name: row.name || "",
     phone: row.phone || "",
@@ -284,9 +341,9 @@ export function propertyFromDb(row: any): any {
   if (!row) return null;
   return {
     id: row.id,
-    userId: row.user_id || row.userId,
+    userId: row.userId || row.user_id,
     organizationId: row.organization_id || row.organizationId,
-    assignedTo: row.assigned_to || row.assignedTo || row.user_id || row.userId,
+    assignedTo: row.assigned_to || row.assignedTo || row.userId || row.user_id,
     createdBy: row.created_by || row.createdBy,
     code: row.code || "",
     ownerId: row.owner_id || row.ownerId || null,
@@ -374,9 +431,9 @@ export function taskFromDb(row: any): any {
   if (!row) return null;
   return {
     id: row.id,
-    userId: row.user_id || row.userId,
+    userId: row.userId || row.user_id,
     organizationId: row.organization_id || row.organizationId,
-    assignedTo: row.assigned_to || row.assignedTo || row.user_id || row.userId,
+    assignedTo: row.assigned_to || row.assignedTo || row.userId || row.user_id,
     createdBy: row.created_by || row.createdBy,
     date: row.date || "",
     time: row.time || "",
@@ -444,9 +501,9 @@ export function proposalFromDb(row: any): any {
   if (!row) return null;
   return {
     id: row.id,
-    userId: row.user_id || row.userId,
+    userId: row.userId || row.user_id,
     organizationId: row.organization_id || row.organizationId,
-    assignedTo: row.assigned_to || row.assignedTo || row.user_id || row.userId,
+    assignedTo: row.assigned_to || row.assignedTo || row.userId || row.user_id,
     createdBy: row.created_by || row.createdBy,
     clientId: row.client_id || row.clientId || "",
     clientName: row.client_name || row.clientName || "",
@@ -508,9 +565,9 @@ export function visitFromDb(row: any): any {
   if (!row) return null;
   return {
     id: row.id,
-    userId: row.user_id || row.userId,
+    userId: row.userId || row.user_id,
     organizationId: row.organization_id || row.organizationId,
-    assignedTo: row.assigned_to || row.assignedTo || row.user_id || row.userId,
+    assignedTo: row.assigned_to || row.assignedTo || row.userId || row.user_id,
     createdBy: row.created_by || row.createdBy,
     clientId: row.client_id || row.clientId || "",
     clientName: row.client_name || row.clientName || "",
@@ -800,6 +857,44 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       }
     }
 
+    // Forward /api/logs to Express backend
+    if (pathname === "/api/logs") {
+      init = init || {};
+      init.headers = {
+        ...(init.headers || {}),
+        "Content-Type": "application/json"
+      };
+      try {
+        const session = await getActiveUserSession().catch(() => null);
+        if (session?.access_token) {
+          (init.headers as any)["Authorization"] = `Bearer ${session.access_token}`;
+        }
+      } catch {}
+
+      try {
+        const targetHost = typeof window !== "undefined" && window.location?.origin
+          ? window.location.origin
+          : "http://localhost:3000";
+        const fetchFn = typeof window !== "undefined" ? window.fetch : fetch;
+        return await fetchFn(`${targetHost}/api/logs`, init);
+      } catch (err: any) {
+        return mockResponse({ error: "Servidor de logs indisponível" }, 503);
+      }
+    }
+
+    // Forward /api/health to Express backend
+    if (pathname === "/api/health") {
+      try {
+        const targetHost = typeof window !== "undefined" && window.location?.origin
+          ? window.location.origin
+          : "http://localhost:3000";
+        const fetchFn = typeof window !== "undefined" ? window.fetch : fetch;
+        return await fetchFn(`${targetHost}/api/health`, init);
+      } catch {
+        return mockResponse({ status: "ok", mode: "offline", timestamp: new Date().toISOString() });
+      }
+    }
+
     // Direct Supabase handler for organization creation and retrieval
     if (pathname === "/api/organizations" && (method === "GET" || method === "POST")) {
       const session = await getActiveUserSession();
@@ -867,23 +962,8 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           }
 
           if (orgs.length === 0) {
-            // Return default fallback organization structure for the user
-            return mockResponse([
-              {
-                id: session.user.id,
-                name: `Organização de ${session.user.email?.split("@")[0] || "Usuário"}`,
-                tradeName: "Metria CRM",
-                creci: "",
-                phone: "",
-                email: session.user.email || "",
-                city: "",
-                state: "",
-                ownerId: session.user.id,
-                plan: "beta",
-                userRole: "owner",
-                userStatus: "active"
-              }
-            ]);
+            // Retorna lista vazia legítima se o usuário não possui organizações vinculadas
+            return mockResponse([]);
           }
 
           const mappedOrgs = orgs.map((org) => {
@@ -908,31 +988,50 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           return mockResponse(mappedOrgs);
         } catch (err: any) {
           console.error("Erro ao buscar organizações:", err);
-          return mockResponse([
-            {
-              id: session.user.id,
-              name: "Organização Pessoal",
-              tradeName: "Metria CRM",
-              plan: "beta",
-              userRole: "owner",
-              userStatus: "active"
-            }
-          ]);
+          return mockResponse({ error: `Erro ao buscar organizações: ${err.message || err}` }, 500);
         }
       }
 
       if (method === "POST") {
         try {
           const { name, tradeName, document, creci, phone, email, city, state, accountType, plan } = body || {};
+          if (!name || !name.trim()) {
+            return mockResponse({ error: "Nome da organização é obrigatório." }, 400);
+          }
+
+          // 1. Try atomic database RPC first
+          const { data: rpcOrg, error: rpcErr } = await supabase.rpc("create_organization_with_owner", {
+            p_name: name.trim(),
+            p_trade_name: tradeName?.trim() || name.trim(),
+            p_document: document?.trim() || null,
+            p_creci: creci?.trim() || null,
+            p_phone: phone?.trim() || null,
+            p_email: email?.trim() || null,
+            p_city: city?.trim() || null,
+            p_state: state?.trim() || null,
+            p_account_type: accountType || "agency",
+            p_plan: plan || "beta"
+          });
+
+          if (!rpcErr && rpcOrg) {
+            return mockResponse(rpcOrg, 201);
+          }
+
+          if (rpcErr && !rpcErr.message.includes("does not exist") && !rpcErr.message.includes("42883")) {
+            console.error("Erro na RPC create_organization_with_owner:", rpcErr);
+            return mockResponse({ error: rpcErr.message }, 400);
+          }
+
+          // Fallback to table insert if RPC not yet deployed in database
           const targetPlan = plan || "beta";
-          const maxMembers = targetPlan === "max" ? 5 : (targetPlan === "pro_max" ? 30 : 1);
+          const maxMembers = targetPlan === "pro_max" ? 30 : (targetPlan === "max" ? 5 : 1);
 
           // Insert into organizations table
           const { data: newOrg, error: orgErr } = await supabase
             .from("organizations")
             .insert({
-              name: name || "Minha Organização",
-              trade_name: tradeName || name,
+              name: name.trim(),
+              trade_name: tradeName?.trim() || name.trim(),
               document: document || null,
               creci: creci || null,
               phone: phone || null,
@@ -949,35 +1048,8 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
             .single();
 
           if (orgErr) {
-            console.warn("Aviso ao criar organização no Supabase (usando fallback se necessário):", orgErr);
-            const fallbackOrg = {
-              id: session.user.id,
-              name: name || "Minha Organização",
-              tradeName: tradeName || name,
-              creci: creci || "",
-              phone: phone || "",
-              email: email || "",
-              city: city || "",
-              state: state || "",
-              ownerId: session.user.id,
-              plan: targetPlan,
-              userRole: "owner"
-            };
-
-            // Update user profile default_organization_id
-            try {
-              await supabase.from("profiles").upsert({
-                id: session.user.id,
-                email: session.user.email,
-                name: session.user.user_metadata?.name || session.user.email?.split("@")[0],
-                default_organization_id: fallbackOrg.id,
-                onboarding_completed: true
-              });
-            } catch (err) {
-              console.warn("Aviso ao atualizar perfil fallback:", err);
-            }
-
-            return mockResponse(fallbackOrg, 201);
+            console.error("Erro ao criar organização no Supabase:", orgErr);
+            return mockResponse({ error: `Erro ao criar organização: ${orgErr.message}` }, 400);
           }
 
           // Create organization_members entry for owner
@@ -985,7 +1057,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
             await supabase.from("organization_members").upsert({
               organization_id: newOrg.id,
               user_id: session.user.id,
-              name: session.user.user_metadata?.name || session.user.email?.split("@")[0] || "",
+              name: session.user.user_metadata?.name || session.user.email?.split("@")[0] || "Proprietário",
               email: session.user.email || "",
               role: "owner",
               status: "active"
@@ -998,7 +1070,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           try {
             await supabase.from("profiles").update({
               default_organization_id: newOrg.id,
-              account_type: accountType || "corretor",
+              account_type: accountType || "agency",
               current_role: "owner",
               onboarding_completed: true
             }).eq("id", session.user.id);
@@ -1084,15 +1156,26 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
     }
 
     if (pathname === "/api/auth/login") {
-      const { username, password } = body;
-      const emailVal = username.includes("@") ? username : `${username}@metriacrm.com.br`;
+      const { username, email, password } = body;
+      const targetIdentifier = (email || username || "").trim();
+      if (!targetIdentifier || !password) {
+        return mockResponse({ error: "E-mail e senha são obrigatórios para o login." }, 400);
+      }
+      
+      // Validação coerente: se não tiver @, apenas usa como está se for um email válido ou rejeita
+      const emailVal = targetIdentifier.includes("@") 
+        ? targetIdentifier 
+        : targetIdentifier; // Não fabrica domínio arbitrário metriacrm.com.br para username arbitrário
+
       const { data, error } = await supabase.auth.signInWithPassword({
         email: emailVal,
         password: password
       });
+
       if (error) {
         return mockResponse({ error: "Email ou senha inválidos." }, 400);
       }
+
       const { data: profile, error: profileErr } = await supabase
         .from("profiles")
         .select("*")
@@ -1106,7 +1189,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       return mockResponse(mapProfileFromDB(profile) || {
         id: data.user.id,
         email: data.user.email,
-        name: data.user.user_metadata?.name || "",
+        name: data.user.user_metadata?.name || data.user.email?.split("@")[0] || "",
         onboardingCompleted: false
       });
     }
@@ -1117,42 +1200,67 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         if (!email || !password) {
           return mockResponse({ error: "E-mail e senha são obrigatórios para o cadastro." }, 400);
         }
+
+        const trimmedEmail = email.trim();
+        if (!trimmedEmail.includes("@")) {
+          return mockResponse({ error: "Por favor, informe um endereço de e-mail válido." }, 400);
+        }
+
         const { data, error } = await supabase.auth.signUp({
-          email: email,
+          email: trimmedEmail,
           password: password,
           options: {
             data: {
-              name,
-              username,
-              role,
-              phone,
-              avatarUrl
+              name: name?.trim() || "",
+              username: username?.trim() || trimmedEmail.split("@")[0],
+              role: role || "broker",
+              phone: phone || "",
+              avatarUrl: avatarUrl || ""
             }
           }
         });
+
         if (error) {
           return mockResponse({ error: error.message }, 400);
         }
+
         if (!data?.user) {
           return mockResponse({ error: "Cadastro realizado, mas nenhum usuário retornado pelo sistema de autenticação." }, 400);
         }
+
         const profileData = {
           id: data.user.id,
-          email: email,
-          name: name || email.split("@")[0],
-          username: username || email.split("@")[0],
+          email: trimmedEmail,
+          name: name?.trim() || trimmedEmail.split("@")[0],
+          username: username?.trim() || trimmedEmail.split("@")[0],
           role: role || "broker",
           phone: phone || "",
           avatarUrl: avatarUrl || "",
           onboardingCompleted: false
         };
-        const dbProfile = mapProfileToDB(profileData);
-        const { error: upsertError } = await supabase.from("profiles").upsert(dbProfile);
-        if (upsertError) {
-          console.error("Erro ao cadastrar perfil no Supabase:", upsertError);
-          return mockResponse({ error: `Usuário cadastrado com sucesso, mas ocorreu um erro ao salvar o perfil no banco de dados: ${upsertError.message}` }, 400);
+
+        // Tratamento de confirmação de e-mail: signUp pode criar usuário sem session imediata
+        const hasSession = Boolean(data.session);
+
+        // Se houver sessão ativa, podemos sincronizar diretamente na tabela profiles com o token autenticado
+        if (hasSession) {
+          const dbProfile = mapProfileToDB(profileData);
+          const { error: upsertError } = await supabase.from("profiles").upsert(dbProfile);
+          if (upsertError) {
+            console.warn("Aviso ao salvar perfil pós-signUp com sessão:", upsertError);
+          }
         }
-        return mockResponse(profileData);
+        // Se NÃO houver sessão imediata (ex: confirmação de e-mail ativada no Supabase),
+        // o trigger on_auth_user_created no banco já cria o perfil com segurança (SECURITY DEFINER).
+        // Não realizamos upsert anônimo impossível e não dizemos que o cadastro falhou.
+
+        return mockResponse({
+          ...profileData,
+          requiresEmailConfirmation: !hasSession,
+          message: hasSession 
+            ? "Cadastro realizado com sucesso." 
+            : "Conta criada com sucesso! Por favor, verifique seu e-mail para confirmar seu cadastro antes de fazer login."
+        }, 201);
       } catch (err: any) {
         console.error("Exceção não tratada no registro de usuário:", err);
         return mockResponse({ error: `Erro inesperado no cadastro de usuário: ${err.message || err}` }, 500);
@@ -1167,24 +1275,148 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
     if (pathname.startsWith("/api/auth/update/")) {
       const session = await getActiveUserSession();
       if (!session?.user) return mockResponse({ error: "Não autorizado" }, 401);
-      
-      const dbUpdate = mapProfileToDB({
-        id: session.user.id,
-        email: session.user.email,
-        ...body
-      });
 
-      const { data, error } = await supabase
+      // 1. ATUALIZAÇÃO DE CREDENCIAIS (SENHA E E-MAIL) VIA SUPABASE AUTH REAL
+      // A senha e o e-mail de acesso são gerenciados pela API de autenticação do Supabase,
+      // não pela tabela pública profiles.
+
+      // A. Troca de Senha
+      if (body?.password !== undefined && body?.password !== "") {
+        const newPassword = String(body.password);
+        // Política de senha real do provedor: mínimo de 6 caracteres
+        if (newPassword.length < 6) {
+          return mockResponse({ error: "A nova senha deve ter no mínimo 6 caracteres conforme a política do provedor." }, 400);
+        }
+
+        const { error: pwdErr } = await supabase.auth.updateUser({
+          password: newPassword
+        });
+
+        if (pwdErr) {
+          console.error("Erro ao atualizar senha no Supabase Auth:", pwdErr);
+          return mockResponse({ error: `Erro ao atualizar senha: ${pwdErr.message}` }, 400);
+        }
+      }
+
+      // B. Troca de E-mail de Login
+      if (body?.email !== undefined && body?.email.trim() !== "") {
+        const newEmail = String(body.email).trim().toLowerCase();
+        const currentEmail = (session.user.email || "").toLowerCase();
+        if (newEmail !== currentEmail) {
+          if (!newEmail.includes("@")) {
+            return mockResponse({ error: "Formato de e-mail inválido." }, 400);
+          }
+
+          const { error: emailErr } = await supabase.auth.updateUser({
+            email: newEmail
+          });
+
+          if (emailErr) {
+            console.error("Erro ao solicitar alteração de e-mail no Supabase Auth:", emailErr);
+            return mockResponse({ error: `Erro ao alterar e-mail no Supabase Auth: ${emailErr.message}` }, 400);
+          }
+        }
+      }
+
+      // 2. ATUALIZAÇÃO DE PERFIL E CONFIGURAÇÕES COMERCIAIS
+      // Busca o perfil atual no banco para preservar dados existentes e evitar sobrescrita com undefined/defaults
+      const { data: currentProfile, error: fetchErr } = await supabase
         .from("profiles")
-        .upsert(dbUpdate, { onConflict: "id" })
-        .select()
+        .select("*")
+        .eq("id", session.user.id)
         .maybeSingle();
 
-      if (error) {
-        console.error("Erro ao atualizar ou criar perfil via upsert no Supabase:", error);
-        return mockResponse({ error: "Erro ao salvar os dados do perfil: " + error.message }, 400);
+      if (fetchErr) {
+        console.error("Erro ao consultar perfil atual:", fetchErr);
+        return mockResponse({ error: `Erro ao consultar perfil: ${fetchErr.message}` }, 400);
       }
-      return mockResponse(mapProfileFromDB(data));
+
+      const updateFields: Record<string, any> = {};
+
+      // Campos básicos de perfil de exibição
+      if (body?.name !== undefined && typeof body.name === "string") updateFields.name = body.name.trim();
+      if (body?.avatarUrl !== undefined && typeof body.avatarUrl === "string") updateFields.avatarUrl = body.avatarUrl.trim();
+      if (body?.phone !== undefined && typeof body.phone === "string") updateFields.phone = body.phone.trim();
+      if (body?.commercialName !== undefined && typeof body.commercialName === "string") updateFields.commercialName = body.commercialName.trim();
+      if (body?.creci !== undefined && typeof body.creci === "string") updateFields.creci = body.creci.trim();
+      if (body?.primaryCity !== undefined && typeof body.primaryCity === "string") updateFields.primaryCity = body.primaryCity.trim();
+      if (body?.actingType !== undefined && typeof body.actingType === "string") updateFields.actingType = body.actingType.trim();
+
+      // Configurações comerciais persistidas com validação rigorosa
+      if (body?.defaultCommissionPercent !== undefined && body?.defaultCommissionPercent !== null) {
+        const comm = Number(body.defaultCommissionPercent);
+        if (!isNaN(comm) && comm >= 0 && comm <= 100) {
+          updateFields.defaultCommissionPercent = comm;
+        }
+      }
+
+      if (Array.isArray(body?.pipelineStages) && body.pipelineStages.length > 0) {
+        const validStages = body.pipelineStages.filter((s: any) => typeof s === "string" && s.trim().length > 0);
+        if (validStages.length > 0) {
+          updateFields.pipelineStages = validStages;
+        }
+      }
+
+      if (Array.isArray(body?.leadSources) && body.leadSources.length > 0) {
+        const validSources = body.leadSources.filter((s: any) => typeof s === "string" && s.trim().length > 0);
+        if (validSources.length > 0) {
+          updateFields.leadSources = validSources;
+        }
+      }
+
+      if (body?.messageTemplates !== undefined && typeof body.messageTemplates === "object" && body.messageTemplates !== null) {
+        updateFields.messageTemplates = body.messageTemplates;
+      }
+
+      // NUNCA aceitar 'id', 'current_role', 'role', 'default_organization_id' ou 'account_type' enviados arbitrariamente
+      delete updateFields.id;
+      delete updateFields.current_role;
+      delete updateFields.currentRole;
+      delete updateFields.role;
+      delete updateFields.default_organization_id;
+      delete updateFields.defaultOrganizationId;
+      delete updateFields.account_type;
+      delete updateFields.accountType;
+
+      updateFields.updatedAt = new Date().toISOString();
+
+      let savedProfile: any = null;
+      if (currentProfile) {
+        const { data, error } = await supabase
+          .from("profiles")
+          .update(updateFields)
+          .eq("id", session.user.id)
+          .select()
+          .maybeSingle();
+
+        if (error) {
+          console.error("Erro ao atualizar perfil no Supabase:", error);
+          return mockResponse({ error: "Erro ao salvar os dados do perfil: " + error.message }, 400);
+        }
+        if (!data) {
+          return mockResponse({ error: "Perfil não encontrado ou nenhuma alteração realizada." }, 404);
+        }
+        savedProfile = data;
+      } else {
+        const initialProfile = mapProfileToDB({
+          id: session.user.id,
+          email: session.user.email,
+          ...updateFields
+        });
+        const { data, error } = await supabase
+          .from("profiles")
+          .insert(initialProfile)
+          .select()
+          .maybeSingle();
+
+        if (error) {
+          console.error("Erro ao criar perfil no Supabase:", error);
+          return mockResponse({ error: "Erro ao criar perfil: " + error.message }, 400);
+        }
+        savedProfile = data;
+      }
+
+      return mockResponse(mapProfileFromDB(savedProfile));
     }
 
     // ==========================================
@@ -1251,14 +1483,14 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         updateErr = retry.error;
       }
 
-      if (updateErr || !updatedOrg) {
-        console.warn(`[PLAN UPDATE FALLBACK] Organização ${orgId} não encontrada no banco ou erro na query. Usando resposta fallback de migração de plano com sucesso.`, { updateErr });
-        // Fallback: return success with updated plan if orgId is a virtual or fallback ID
-        return mockResponse({
-          id: orgId,
-          plan: plan,
-          subscriptionStatus: "active"
-        });
+      if (updateErr) {
+        console.error(`[PLAN UPDATE ERROR] Falha ao atualizar plano da organização ${orgId}:`, updateErr);
+        return mockResponse({ error: updateErr.message }, 400);
+      }
+
+      if (!updatedOrg) {
+        console.warn(`[PLAN UPDATE REJECTED] Organização ${orgId} não encontrada ou nenhuma linha afetada.`);
+        return mockResponse({ error: "Organização não encontrada ou nenhuma linha afetada." }, 404);
       }
 
       console.log(`[PLAN UPDATE SUCCESS] Organização ${orgId} atualizada com sucesso no banco para o plano "${plan}". Data:`, updatedOrg);
@@ -1313,10 +1545,81 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       if (!session?.user) return mockResponse({ error: "Não autorizado" }, 401);
       const memberId = pathname.split("/").pop();
 
+      // Check current target member state first
+      const { data: targetMember, error: fetchErr } = await supabase
+        .from("organization_members")
+        .select("id, organization_id, user_id, role, status")
+        .eq("id", memberId)
+        .maybeSingle();
+
+      if (fetchErr || !targetMember) {
+        return mockResponse({ error: "Membro não encontrado." }, 404);
+      }
+
       const { role, status } = body;
+
+      // Validate allowed values
+      if (role && !["owner", "admin", "manager", "broker"].includes(role)) {
+        return mockResponse({ error: "Cargo inválido." }, 400);
+      }
+      if (status && !["active", "inactive"].includes(status)) {
+        return mockResponse({ error: "Status inválido." }, 400);
+      }
+
+      // Check self-promotion attempt
+      if (targetMember.user_id === session.user.id && role && role !== targetMember.role) {
+        return mockResponse({ error: "Autopromoção não é permitida: você não pode alterar seu próprio cargo." }, 403);
+      }
+
+      // Check self-reactivation attempt
+      if (targetMember.user_id === session.user.id && targetMember.status === "inactive" && status === "active") {
+        return mockResponse({ error: "Reativação própria não é permitida: contate um administrador." }, 403);
+      }
+
+      // If changing role or status, verify caller has owner or admin role
+      if ((role && role !== targetMember.role) || (status && status !== targetMember.status)) {
+        const callerRole = await getOrgMemberRole(targetMember.organization_id, session.user.id);
+        if (!callerRole || !["owner", "admin"].includes(callerRole)) {
+          return mockResponse({ error: "Apenas o proprietário ou administradores podem alterar cargos e status da equipe." }, 403);
+        }
+
+        // Verify organization owner protection
+        const { data: orgData } = await supabase
+          .from("organizations")
+          .select("owner_id")
+          .eq("id", targetMember.organization_id)
+          .maybeSingle();
+
+        if (orgData?.owner_id === targetMember.user_id) {
+          if (role && role !== "owner") {
+            return mockResponse({ error: "O proprietário legítimo da organização não pode ser rebaixado de cargo." }, 403);
+          }
+          if (status && status !== "active") {
+            return mockResponse({ error: "O proprietário legítimo da organização não pode ser inativado." }, 403);
+          }
+        }
+
+        // Only owner can promote someone to owner
+        if (role === "owner" && targetMember.role !== "owner" && callerRole !== "owner") {
+          return mockResponse({ error: "Apenas o proprietário da organização pode transferir ou conceder o cargo de proprietário." }, 403);
+        }
+
+        // Admin cannot modify other admins
+        if (callerRole === "admin" && ["admin", "owner"].includes(targetMember.role) && targetMember.user_id !== session.user.id) {
+          return mockResponse({ error: "Administradores não podem alterar outros administradores ou o proprietário." }, 403);
+        }
+      }
+
+      const updatePayload: Record<string, any> = {};
+      if (role !== undefined) updatePayload.role = role;
+      if (status !== undefined) updatePayload.status = status;
+      if (body.name !== undefined) updatePayload.name = body.name;
+      if (body.phone !== undefined) updatePayload.phone = body.phone;
+      if (body.creci !== undefined) updatePayload.creci = body.creci;
+
       const { data, error } = await supabase
         .from("organization_members")
-        .update({ role, status })
+        .update(updatePayload)
         .eq("id", memberId)
         .select()
         .single();
@@ -1363,32 +1666,93 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       return mockResponse(mappedInvites);
     }
 
-    // 6. CREATE AN INVITE FOR THE ACTIVE ORGANIZATION
+    // 6. CREATE AN INVITE FOR THE ACTIVE ORGANIZATION (CRYPTOGRAPHICALLY SECURE & ENFORCED)
     if (pathname === "/api/organizations/invites" && method === "POST") {
       const session = await getActiveUserSession();
       if (!session?.user) return mockResponse({ error: "Não autorizado" }, 401);
 
       const { organizationId, invitedEmail, invitedName, role } = body;
+      if (!organizationId || !invitedEmail || !invitedEmail.trim()) {
+        return mockResponse({ error: "Organização e e-mail do destinatário são obrigatórios." }, 400);
+      }
+
+      // 1. Try secure RPC create_organization_invite_v2 first
+      const { data: rpcInvite, error: rpcErr } = await supabase.rpc("create_organization_invite_v2", {
+        p_org_id: organizationId,
+        p_invited_email: invitedEmail.trim(),
+        p_invited_name: invitedName?.trim() || null,
+        p_role: role || "broker"
+      });
+
+      if (!rpcErr && rpcInvite) {
+        return mockResponse(rpcInvite, 201);
+      }
+
+      if (rpcErr && !rpcErr.message.includes("does not exist") && !rpcErr.message.includes("42883")) {
+        return mockResponse({ error: rpcErr.message }, 400);
+      }
+
+      // Fallback: verified server validation before direct insert
+      const callerRole = await getOrgMemberRole(organizationId, session.user.id);
+      if (!callerRole || !["owner", "admin"].includes(callerRole)) {
+        return mockResponse({ error: "Apenas o proprietário ou administradores podem convidar membros para a equipe." }, 403);
+      }
 
       const planCheck = await checkPlanLimit(organizationId, "members");
       if (!planCheck.allowed) {
         return mockResponse({ error: planCheck.error }, 403);
       }
 
-      const token = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      // Generate cryptographically secure random token (32 bytes hex)
+      const tokenArray = new Uint8Array(32);
+      crypto.getRandomValues(tokenArray);
+      const token = Array.from(tokenArray).map(b => b.toString(16).padStart(2, "0")).join("");
+
+      // Calculate sha256 hash if Web Crypto is available
+      let tokenHash: string | null = null;
+      try {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(token);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+        tokenHash = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+      } catch (hErr) {
+        tokenHash = null;
+      }
+
+      const targetRole = role || "broker";
+      if (!["admin", "manager", "broker"].includes(targetRole)) {
+        return mockResponse({ error: "Cargo de convite inválido." }, 400);
+      }
+
+      if (callerRole === "admin" && ["admin", "owner"].includes(targetRole)) {
+        return mockResponse({ error: "Apenas o proprietário pode convidar administradores." }, 403);
+      }
+
+      // Cancel previous pending invites to this email in this org
+      await supabase
+        .from("organization_invites")
+        .update({ status: "cancelled" })
+        .eq("organization_id", organizationId)
+        .eq("invited_email", invitedEmail.trim().toLowerCase())
+        .eq("status", "pending");
+
+      const insertPayload: Record<string, any> = {
+        organization_id: organizationId,
+        invited_email: invitedEmail.trim().toLowerCase(),
+        invited_name: invitedName?.trim() || null,
+        role: targetRole,
+        token,
+        status: "pending",
+        invited_by: session.user.id,
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      };
+      if (tokenHash) {
+        insertPayload.token_hash = tokenHash;
+      }
 
       const { data: invite, error: invErr } = await supabase
         .from("organization_invites")
-        .insert({
-          organization_id: organizationId,
-          invited_email: invitedEmail,
-          invited_name: invitedName,
-          role: role || "broker",
-          token,
-          status: "pending",
-          invited_by: session.user.id,
-          expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-        })
+        .insert(insertPayload)
         .select()
         .single();
 
@@ -1415,20 +1779,65 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       const { token } = body;
       if (!token) return mockResponse({ error: "Token de convite é obrigatório." }, 400);
 
+      // Try secure RPC first
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("accept_organization_invite", {
+        p_token: token
+      });
+
+      if (!rpcErr && rpcData?.success) {
+        return mockResponse({
+          success: true,
+          organizationId: rpcData.organizationId,
+          role: rpcData.role
+        });
+      }
+
+      if (rpcErr && !rpcErr.message.includes("does not exist") && !rpcErr.message.includes("function") && !rpcErr.message.includes("42883")) {
+        return mockResponse({ error: rpcErr.message }, 400);
+      }
+
+      // Fallback for environment before RPC is applied
+      const cleanToken = (token || "").trim();
       const { data: invite, error: invErr } = await supabase
         .from("organization_invites")
         .select("*")
-        .eq("token", token)
-        .eq("status", "pending")
+        .eq("token", cleanToken)
         .maybeSingle();
 
       if (invErr || !invite) {
-        return mockResponse({ error: "Convite inválido, expirado ou já aceito." }, 400);
+        return mockResponse({ error: "Convite inválido, cancelado ou não encontrado." }, 400);
+      }
+
+      // Replay / idempotency check
+      if (invite.status === "accepted") {
+        if (invite.accepted_by === session.user.id) {
+          return mockResponse({ success: true, organizationId: invite.organization_id, role: invite.role });
+        }
+        return mockResponse({ error: "Este convite já foi utilizado por outro usuário." }, 400);
+      }
+
+      if (invite.status !== "pending") {
+        return mockResponse({ error: "Convite inválido ou cancelado." }, 400);
       }
 
       if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
         await supabase.from("organization_invites").update({ status: "expired" }).eq("id", invite.id);
         return mockResponse({ error: "Este convite expirou." }, 400);
+      }
+
+      // Validar e-mail do usuário autenticado contra destinatário do convite
+      const userEmail = (session.user.email || "").trim().toLowerCase();
+      const invitedEmail = (invite.invited_email || "").trim().toLowerCase();
+      if (userEmail !== invitedEmail) {
+        return mockResponse({
+          error: `Este convite foi enviado para "${invite.invited_email}", mas você está logado como "${session.user.email}". Faça login com a conta correta para aceitar.`
+        }, 403);
+      }
+
+      // Validação de limite de membros da organização
+      const planCheck = await checkPlanLimit(invite.organization_id, "members");
+      if (!planCheck.allowed) {
+        return mockResponse({ error: planCheck.error }, 403);
       }
 
       const { error: memErr } = await supabase
@@ -1474,11 +1883,26 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       if (!session?.user) return mockResponse({ error: "Não autorizado" }, 401);
 
       const { clientIds, targetBrokerId, organizationId } = body;
-      if (!clientIds || !Array.isArray(clientIds) || !targetBrokerId || !organizationId) {
+      if (!clientIds || !Array.isArray(clientIds) || clientIds.length === 0 || !targetBrokerId || !organizationId) {
         return mockResponse({ error: "Parâmetros inválidos para transferência" }, 400);
       }
 
-      // Validate plan is Max or PRO MAX
+      // Try secure RPC first
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("transfer_client_assignment", {
+        p_client_ids: clientIds,
+        p_target_broker_id: targetBrokerId,
+        p_organization_id: organizationId
+      });
+
+      if (!rpcErr && rpcData?.success) {
+        return mockResponse({ success: true, count: rpcData.transferredCount || clientIds.length });
+      }
+
+      if (rpcErr && !rpcErr.message.includes("does not exist") && !rpcErr.message.includes("42883")) {
+        return mockResponse({ error: rpcErr.message }, 400);
+      }
+
+      // Strict validated fallback
       const { data: org } = await supabase
         .from("organizations")
         .select("plan")
@@ -1490,10 +1914,32 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         return mockResponse({ error: "Transferência de leads está disponível apenas nos planos Max e PRO MAX." }, 403);
       }
 
-      // Validate user role is owner, admin, or manager
+      // Validate caller role strictly from organization_members
       const role = await getOrgMemberRole(organizationId, session.user.id);
       if (!role || (role !== "owner" && role !== "admin" && role !== "manager")) {
         return mockResponse({ error: "Apenas proprietários, administradores ou gestores podem transferir leads." }, 403);
+      }
+
+      // Validate recipient broker is an active member of the same organization
+      const targetBrokerRole = await getOrgMemberRole(organizationId, targetBrokerId);
+      if (!targetBrokerRole) {
+        return mockResponse({ error: "O corretor destinatário não é membro ativo desta organização." }, 400);
+      }
+
+      // Pre-flight check: ensure all clients exist and belong strictly to organizationId (no partial update!)
+      const { data: existingClients, error: fetchClientsErr } = await supabase
+        .from("clients")
+        .select("id, organization_id, history")
+        .in("id", clientIds);
+
+      if (fetchClientsErr || !existingClients || existingClients.length !== clientIds.length) {
+        return mockResponse({ error: "Um ou mais clientes não foram encontrados para transferência." }, 400);
+      }
+
+      for (const c of existingClients) {
+        if (c.organization_id !== organizationId) {
+          return mockResponse({ error: "Violação de tenant: um ou mais clientes não pertencem a esta organização." }, 403);
+        }
       }
 
       const { data: brokerMember } = await supabase
@@ -1505,13 +1951,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
       const brokerName = brokerMember?.name || "Outro Corretor";
 
-      for (const clientId of clientIds) {
-        const { data: client } = await supabase
-          .from("clients")
-          .select("history")
-          .eq("id", clientId)
-          .maybeSingle();
-
+      for (const client of existingClients) {
         const history = client?.history || [];
         const newHistory = [
           ...history,
@@ -1524,20 +1964,28 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           }
         ];
 
-        await supabase
+        const { data: updData, error: updErr } = await supabase
           .from("clients")
           .update({
             assigned_to: targetBrokerId,
             history: newHistory
           })
-          .eq("id", clientId)
-          .eq("organization_id", organizationId);
+          .eq("id", client.id)
+          .eq("organization_id", organizationId)
+          .select();
+
+        if (updErr) {
+          return mockResponse({ error: `Erro na transferência do cliente: ${updErr.message}` }, 400);
+        }
+        if (!updData || updData.length === 0) {
+          return mockResponse({ error: `Falha ao transferir cliente ${client.id}: nenhuma linha afetada.` }, 400);
+        }
       }
 
       return mockResponse({ success: true, count: clientIds.length });
     }
 
-    // 3. IMAGE UPLOAD via Supabase Storage
+    // 3. IMAGE UPLOAD via Supabase Storage & StorageManager
     if (pathname === "/api/upload") {
       const session = await getActiveUserSession();
       if (!session?.user) return mockResponse({ error: "Não autorizado" }, 401);
@@ -1548,36 +1996,36 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       }
 
       try {
-        const arr = dataUrl.split(',');
-        const mimeMatch = arr[0].match(/:(.*?);/);
-        const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
-        
-        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-        if (!allowedTypes.includes(mime)) {
-          return mockResponse({ error: "Apenas imagens nos formatos JPG, JPEG, PNG ou WEBP são permitidas." }, 400);
+        const { buffer, declaredMime } = parseDataUrl(dataUrl);
+
+        // Validação estrita de Magic Bytes e tamanho máximo confiável
+        const validation = validateUploadFile(buffer, declaredMime, "public_photo");
+        if (!validation.valid) {
+          return mockResponse({ error: validation.error }, 400);
         }
 
-        const bstr = atob(arr[1]);
-        let n = bstr.length;
-        const u8arr = new Uint8Array(n);
-        while (n--) {
-          u8arr[n] = bstr.charCodeAt(n);
+        // Obtém organização ativa do usuário
+        const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
+        const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
+        const activeOrgId = headerOrgId || profile?.default_organization_id || session.user.id;
+
+        // Validação de cota de armazenamento do tenant
+        const { data: org } = await supabase.from("organizations").select("plan").eq("id", activeOrgId).maybeSingle();
+        const plan = org?.plan || "beta";
+
+        const quotaCheck = checkTenantQuota(activeOrgId, plan, buffer.length);
+        if (!quotaCheck.allowed) {
+          return mockResponse({ error: quotaCheck.error }, 403);
         }
-        const blob = new Blob([u8arr], { type: mime });
 
-        const maxSizeBytes = 5 * 1024 * 1024;
-        if (blob.size > maxSizeBytes) {
-          return mockResponse({ error: "O tamanho da imagem não deve exceder 5MB." }, 400);
-        }
+        const extension = validation.verifiedMime?.split('/')[1] || 'jpg';
+        const { path, bucket } = buildStoragePath(activeOrgId, "public_photo", "new-property", extension);
 
-        const extension = mime.split('/')[1] || 'jpg';
-        const filename = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${extension}`;
-        const path = `users/${session.user.id}/properties/new-property/${filename}`;
-
+        const blob = new Blob([buffer], { type: validation.verifiedMime });
         const { data, error: uploadError } = await supabase.storage
-          .from('property-images')
+          .from(bucket)
           .upload(path, blob, {
-            contentType: mime,
+            contentType: validation.verifiedMime,
             upsert: true
           });
 
@@ -1585,11 +2033,13 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           throw uploadError;
         }
 
+        recordTenantStorageAdd(activeOrgId, buffer.length);
+
         const { data: { publicUrl } } = supabase.storage
-          .from('property-images')
+          .from(bucket)
           .getPublicUrl(path);
 
-        return mockResponse({ url: publicUrl });
+        return mockResponse({ url: publicUrl, path, size: buffer.length });
       } catch (err: any) {
         console.error("Erro no upload de imagem:", err);
         return mockResponse({ error: `Falha no upload: ${err.message}` }, 400);
@@ -1604,6 +2054,13 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
       const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
       const activeOrgId = headerOrgId || profile?.default_organization_id;
+
+      if (activeOrgId) {
+        const userRole = await getOrgMemberRole(activeOrgId, session.user.id);
+        if (!userRole) {
+          return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+        }
+      }
 
       if (method === "GET") {
         let query = supabase.from("properties").select("*");
@@ -1698,11 +2155,17 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         if (error) return mockResponse({ error: "Imóvel não encontrado" }, 404);
         return mockResponse(propertyFromDb(data));
       } else if (method === "PUT") {
+        if (activeOrgId) {
+          const userRole = await getOrgMemberRole(activeOrgId, session.user.id);
+          if (!userRole) return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+        }
+
         const updateData = { ...body };
         delete updateData.id;
         delete updateData._id;
         delete updateData.userId;
         delete updateData.user_id;
+        delete updateData.organization_id;
 
         const dbPayload = propertyToDb(updateData);
         let query = supabase.from("properties").update(dbPayload).eq("id", id);
@@ -1712,8 +2175,9 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           query = query.eq("userId", session.user.id);
         }
 
-        const { data, error } = await query.select().single();
+        const { data, error } = await query.select().maybeSingle();
         if (error) return mockResponse({ error: error.message }, 400);
+        if (!data) return mockResponse({ error: "Imóvel não encontrado ou nenhuma alteração realizada." }, 404);
         return mockResponse(propertyFromDb(data));
       } else if (method === "DELETE") {
         const { data: property, error: fetchErr } = await supabase
@@ -1746,9 +2210,12 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           query = query.eq("userId", session.user.id);
         }
 
-        const { error } = await query;
+        const { data: delResult, error } = await query.select();
         if (error) return mockResponse({ error: error.message }, 400);
-        return mockResponse({ success: true });
+        if (!delResult || delResult.length === 0) {
+          return mockResponse({ error: "Imóvel não encontrado para exclusão ou nenhuma linha afetada." }, 404);
+        }
+        return mockResponse({ success: true, deletedId: id });
       }
     }
 
@@ -1758,16 +2225,20 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       if (!session?.user) return mockResponse([], 401);
 
       const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
-      const { data: profile } = await supabase.from("profiles").select("default_organization_id, current_role, name").eq("id", session.user.id).maybeSingle();
+      const { data: profile } = await supabase.from("profiles").select("default_organization_id, name").eq("id", session.user.id).maybeSingle();
       const activeOrgId = headerOrgId || profile?.default_organization_id;
-      const userRole = activeOrgId ? (activeOrgId === profile?.default_organization_id ? profile?.current_role : await getOrgMemberRole(activeOrgId, session.user.id)) : null;
+      const userRole = activeOrgId ? await getOrgMemberRole(activeOrgId, session.user.id) : null;
+
+      if (activeOrgId && !userRole) {
+        return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+      }
 
       if (method === "GET") {
         let query = supabase.from("clients").select("*");
         if (activeOrgId) {
           query = query.eq("organization_id", activeOrgId);
           if (userRole === "broker") {
-            query = query.or(`assigned_to.eq.${session.user.id},user_id.eq.${session.user.id}`);
+            query = query.or(`assigned_to.eq.${session.user.id},userId.eq.${session.user.id}`);
           }
         } else {
           query = query.eq("userId", session.user.id);
@@ -1880,37 +2351,59 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           return mockResponse({ error: "Cliente não encontrado para edição" }, 404);
         }
 
-        const oldClient = clientFromDb(rawOldClient);
-        const userName = profile?.name || session.user.email || "Corretor";
-
-        const existingHistory = body.history || oldClient.history || [
-          {
-            id: Math.random().toString(36).substring(2, 11),
-            type: "creation",
-            date: oldClient.createdAt || new Date().toISOString(),
-            description: "Lead criado no sistema",
-            userName
+        if (activeOrgId) {
+          const userRole = await getOrgMemberRole(activeOrgId, session.user.id);
+          if (!userRole) {
+            return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
           }
-        ];
+          if (userRole === "broker" && rawOldClient.assigned_to !== session.user.id && rawOldClient.userId !== session.user.id) {
+            return mockResponse({ error: "Apenas o corretor responsável ou gestores podem editar este lead." }, 403);
+          }
+        }
 
-        const additionalEntries = [];
+        const oldClient = clientFromDb(rawOldClient);
+        const actorName = profile?.name || session.user.email || "Corretor";
+        const nowIso = new Date().toISOString();
+
+        // 1. Histórico base estritamente preservado do banco (previne sobrescrita e read-modify-write arbitrário)
+        const currentDbHistory: any[] = Array.isArray(rawOldClient.history) ? rawOldClient.history : [];
+
+        // 2. Anotações manuais enviadas pelo navegador que não existiam previamente
+        const incomingHistory: any[] = Array.isArray(body.history) ? body.history : [];
+        const newBrowserEntries = incomingHistory
+          .filter((item: any) => {
+            if (!item || typeof item !== "object") return false;
+            if (!item.id) return true;
+            return !currentDbHistory.some((existing: any) => existing.id === item.id);
+          })
+          .map((item: any) => ({
+            id: item.id || Math.random().toString(36).substring(2, 11),
+            type: item.type || "note",
+            date: nowIso,
+            description: String(item.description || "").trim(),
+            userName: actorName
+          }))
+          .filter((item: any) => item.description.length > 0);
+
+        // 3. Eventos automáticos de ciclo de vida com ator e horário confiáveis
+        const automatedEntries = [];
         if (body.status !== undefined && body.status !== oldClient.status) {
-          additionalEntries.push({
+          automatedEntries.push({
             id: Math.random().toString(36).substring(2, 11),
             type: "status_change",
-            date: new Date().toISOString(),
+            date: nowIso,
             description: `Status alterado de "${oldClient.status || "Sem Status"}" para "${body.status}"`,
-            userName
+            userName: actorName
           });
         }
 
         if (body.pipelineStatus !== undefined && body.pipelineStatus !== oldClient.pipelineStatus) {
-          additionalEntries.push({
+          automatedEntries.push({
             id: Math.random().toString(36).substring(2, 11),
             type: "pipeline_change",
-            date: new Date().toISOString(),
+            date: nowIso,
             description: `Etapa do pipeline alterada de "${oldClient.pipelineStatus || "Sem etapa"}" para "${body.pipelineStatus}"`,
-            userName
+            userName: actorName
           });
         }
 
@@ -1919,18 +2412,33 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           body.lossReason &&
           body.lossReason !== oldClient.lossReason
         ) {
-          additionalEntries.push({
+          automatedEntries.push({
             id: Math.random().toString(36).substring(2, 11),
             type: "loss",
-            date: new Date().toISOString(),
+            date: nowIso,
             description: `Motivo de perda registrado: "${body.lossReason}"`,
-            userName
+            userName: actorName
           });
         }
 
-        let finalHistory = existingHistory;
-        if (additionalEntries.length > 0) {
-          finalHistory = [...existingHistory, ...additionalEntries];
+        const allNewEntries = [...newBrowserEntries, ...automatedEntries];
+        const finalHistory = [...currentDbHistory, ...allNewEntries];
+
+        // Registro append-only na tabela history_events
+        for (const entry of allNewEntries) {
+          const { error: histErr } = await supabase.from("history_events").insert({
+            clientId: id,
+            userId: session.user.id,
+            organization_id: rawOldClient.organization_id || null,
+            assigned_to: rawOldClient.assigned_to || null,
+            type: entry.type,
+            date: entry.date,
+            description: entry.description,
+            userName: entry.userName
+          });
+          if (histErr) {
+            console.warn("Aviso ao registrar histórico na tabela history_events:", histErr);
+          }
         }
 
         const updateData = {
@@ -1941,6 +2449,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         delete updateData._id;
         delete updateData.userId;
         delete updateData.user_id;
+        delete updateData.organization_id;
 
         const dbPayload = clientToDb(updateData);
         console.log("Client PUT payload to Supabase:", dbPayload);
@@ -1956,6 +2465,10 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         if (error) {
           console.error("Client PUT error from Supabase:", error);
           return mockResponse({ error: error.message }, 400);
+        }
+
+        if (!data) {
+          return mockResponse({ error: "Cliente não encontrado ou nenhuma alteração realizada." }, 404);
         }
 
         const returnedClient = clientFromDb(data);
@@ -1980,13 +2493,15 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           return mockResponse({ error: "Cliente não encontrado." }, 404);
         }
 
-        // Verify ownership/authorization
-        if (activeOrgId) {
-          if (client.organization_id !== activeOrgId) {
-            return mockResponse({ error: "Você não tem autorização para excluir este cliente." }, 403);
+        // Verify ownership/authorization strictly
+        if (client.organization_id) {
+          // Client belongs to an organization: requires active membership
+          const userRole = await getOrgMemberRole(client.organization_id, session.user.id);
+          if (!userRole) {
+            return mockResponse({ error: "Você não tem autorização para excluir este cliente: vínculo inativo ou ausente na organização." }, 403);
           }
-          const userRole = await getOrgMemberRole(activeOrgId, session.user.id);
-          const isManagerOrHigher = userRole && ["owner", "admin", "manager"].includes(userRole);
+
+          const isManagerOrHigher = ["owner", "admin", "manager"].includes(userRole);
           const isCreator = client.userId === session.user.id;
           const isAssigned = client.assigned_to === session.user.id;
 
@@ -1994,8 +2509,9 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
             return mockResponse({ error: "Você não tem autorização para excluir este cliente." }, 403);
           }
         } else {
+          // Legacy client without organization: only the original owner is permitted
           if (client.userId !== session.user.id) {
-            return mockResponse({ error: "Você não tem autorização para excluir este cliente." }, 403);
+            return mockResponse({ error: "Apenas o criador/proprietário original pode excluir este cliente legado." }, 403);
           }
         }
 
@@ -2018,16 +2534,47 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
           if (isNotAvailable) {
             console.log("[DELETE CLIENT] RPC delete_client_cascade not available, falling back to direct table delete");
+            // Desvincular imóveis associados
+            const { error: propUnlinkErr } = await supabase.from("properties").update({ ownerId: null }).eq("ownerId", id);
+            if (propUnlinkErr) {
+              console.warn("Aviso ao desvincular proprietário dos imóveis:", propUnlinkErr);
+            }
+
+            // Excluir tarefas dependentes de forma consistente (evita tarefas órfãs)
+            const { error: taskDelErr } = await supabase.from("tasks").delete().eq("clientId", id);
+            if (taskDelErr) {
+              return mockResponse({ error: `Erro ao remover tarefas vinculadas ao cliente: ${taskDelErr.message}` }, 400);
+            }
+
+            // Excluir visitas, propostas e histórico vinculados
+            const { error: visitDelErr } = await supabase.from("visits").delete().eq("clientId", id);
+            if (visitDelErr) {
+              return mockResponse({ error: `Erro ao remover visitas vinculadas: ${visitDelErr.message}` }, 400);
+            }
+
+            const { error: propDelErr } = await supabase.from("proposals").delete().eq("clientId", id);
+            if (propDelErr) {
+              return mockResponse({ error: `Erro ao remover propostas vinculadas: ${propDelErr.message}` }, 400);
+            }
+
+            const { error: histDelErr } = await supabase.from("history_events").delete().eq("clientId", id);
+            if (histDelErr) {
+              console.warn("Aviso ao limpar histórico de eventos:", histDelErr);
+            }
+
             let deleteQuery = supabase.from("clients").delete().eq("id", id);
-            if (activeOrgId) {
-              deleteQuery = deleteQuery.eq("organization_id", activeOrgId);
+            if (client.organization_id) {
+              deleteQuery = deleteQuery.eq("organization_id", client.organization_id);
             } else {
               deleteQuery = deleteQuery.eq("userId", session.user.id);
             }
-            const { error: fallbackError } = await deleteQuery;
+            const { data: delResult, error: fallbackError } = await deleteQuery.select();
             if (fallbackError) {
               console.error("Client DELETE direct fallback error:", fallbackError);
               return mockResponse({ error: fallbackError.message }, 400);
+            }
+            if (!delResult || delResult.length === 0) {
+              return mockResponse({ error: "Cliente não encontrado para exclusão ou nenhuma linha afetada." }, 404);
             }
             return mockResponse({ success: true, deletedId: id });
           } else {
@@ -2070,16 +2617,20 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       if (!session?.user) return mockResponse([], 401);
 
       const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
-      const { data: profile } = await supabase.from("profiles").select("default_organization_id, current_role").eq("id", session.user.id).maybeSingle();
+      const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
       const activeOrgId = headerOrgId || profile?.default_organization_id;
-      const userRole = activeOrgId ? (activeOrgId === profile?.default_organization_id ? profile?.current_role : await getOrgMemberRole(activeOrgId, session.user.id)) : null;
+      const userRole = activeOrgId ? await getOrgMemberRole(activeOrgId, session.user.id) : null;
+
+      if (activeOrgId && !userRole) {
+        return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+      }
 
       if (method === "GET") {
         let query = supabase.from("proposals").select("*");
         if (activeOrgId) {
           query = query.eq("organization_id", activeOrgId);
           if (userRole === "broker") {
-            query = query.or(`assigned_to.eq.${session.user.id},user_id.eq.${session.user.id}`);
+            query = query.or(`assigned_to.eq.${session.user.id},userId.eq.${session.user.id}`);
           }
         } else {
           query = query.eq("userId", session.user.id);
@@ -2133,11 +2684,17 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       const activeOrgId = headerOrgId || profile?.default_organization_id;
 
       if (method === "PUT") {
+        if (activeOrgId) {
+          const userRole = await getOrgMemberRole(activeOrgId, session.user.id);
+          if (!userRole) return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+        }
+
         const updateData = { ...body };
         delete updateData.id;
         delete updateData._id;
         delete updateData.userId;
         delete updateData.user_id;
+        delete updateData.organization_id;
 
         const dbPayload = proposalToDb(updateData);
         let query = supabase.from("proposals").update(dbPayload).eq("id", id);
@@ -2147,8 +2704,9 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           query = query.eq("userId", session.user.id);
         }
 
-        const { data, error } = await query.select().single();
+        const { data, error } = await query.select().maybeSingle();
         if (error) return mockResponse({ error: error.message }, 400);
+        if (!data) return mockResponse({ error: "Proposta não encontrada ou nenhuma alteração realizada." }, 404);
         return mockResponse(proposalFromDb(data));
       } else if (method === "DELETE") {
         const { data: proposal, error: fetchErr } = await supabase
@@ -2181,9 +2739,12 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           query = query.eq("userId", session.user.id);
         }
 
-        const { error } = await query;
+        const { data: delResult, error } = await query.select();
         if (error) return mockResponse({ error: error.message }, 400);
-        return mockResponse({ success: true });
+        if (!delResult || delResult.length === 0) {
+          return mockResponse({ error: "Proposta não encontrada para exclusão ou nenhuma linha afetada." }, 404);
+        }
+        return mockResponse({ success: true, deletedId: id });
       }
     }
 
@@ -2193,16 +2754,20 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       if (!session?.user) return mockResponse([], 401);
 
       const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
-      const { data: profile } = await supabase.from("profiles").select("default_organization_id, current_role").eq("id", session.user.id).maybeSingle();
+      const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
       const activeOrgId = headerOrgId || profile?.default_organization_id;
-      const userRole = activeOrgId ? (activeOrgId === profile?.default_organization_id ? profile?.current_role : await getOrgMemberRole(activeOrgId, session.user.id)) : null;
+      const userRole = activeOrgId ? await getOrgMemberRole(activeOrgId, session.user.id) : null;
+
+      if (activeOrgId && !userRole) {
+        return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+      }
 
       if (method === "GET") {
         let query = supabase.from("visits").select("*");
         if (activeOrgId) {
           query = query.eq("organization_id", activeOrgId);
           if (userRole === "broker") {
-            query = query.or(`assigned_to.eq.${session.user.id},user_id.eq.${session.user.id}`);
+            query = query.or(`assigned_to.eq.${session.user.id},userId.eq.${session.user.id}`);
           }
         } else {
           query = query.eq("userId", session.user.id);
@@ -2256,11 +2821,17 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       const activeOrgId = headerOrgId || profile?.default_organization_id;
 
       if (method === "PUT") {
+        if (activeOrgId) {
+          const userRole = await getOrgMemberRole(activeOrgId, session.user.id);
+          if (!userRole) return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+        }
+
         const updateData = { ...body };
         delete updateData.id;
         delete updateData._id;
         delete updateData.userId;
         delete updateData.user_id;
+        delete updateData.organization_id;
 
         const dbPayload = visitToDb(updateData);
         let query = supabase.from("visits").update(dbPayload).eq("id", id);
@@ -2270,8 +2841,9 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           query = query.eq("userId", session.user.id);
         }
 
-        const { data, error } = await query.select().single();
+        const { data, error } = await query.select().maybeSingle();
         if (error) return mockResponse({ error: error.message }, 400);
+        if (!data) return mockResponse({ error: "Visita não encontrada ou nenhuma alteração realizada." }, 404);
         return mockResponse(visitFromDb(data));
       } else if (method === "DELETE") {
         const { data: visit, error: fetchErr } = await supabase
@@ -2304,9 +2876,12 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           query = query.eq("userId", session.user.id);
         }
 
-        const { error } = await query;
+        const { data: delResult, error } = await query.select();
         if (error) return mockResponse({ error: error.message }, 400);
-        return mockResponse({ success: true });
+        if (!delResult || delResult.length === 0) {
+          return mockResponse({ error: "Visita não encontrada para exclusão ou nenhuma linha afetada." }, 404);
+        }
+        return mockResponse({ success: true, deletedId: id });
       }
     }
 
@@ -2316,16 +2891,20 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       if (!session?.user) return mockResponse([], 401);
 
       const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
-      const { data: profile } = await supabase.from("profiles").select("default_organization_id, current_role").eq("id", session.user.id).maybeSingle();
+      const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
       const activeOrgId = headerOrgId || profile?.default_organization_id;
-      const userRole = activeOrgId ? (activeOrgId === profile?.default_organization_id ? profile?.current_role : await getOrgMemberRole(activeOrgId, session.user.id)) : null;
+      const userRole = activeOrgId ? await getOrgMemberRole(activeOrgId, session.user.id) : null;
+
+      if (activeOrgId && !userRole) {
+        return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+      }
 
       if (method === "GET") {
         let query = supabase.from("tasks").select("*");
         if (activeOrgId) {
           query = query.eq("organization_id", activeOrgId);
           if (userRole === "broker") {
-            query = query.or("assigned_to.eq." + session.user.id + ",user_id.eq." + session.user.id);
+            query = query.or(`assigned_to.eq.${session.user.id},userId.eq.${session.user.id}`);
           }
         } else {
           query = query.eq("userId", session.user.id);
@@ -2379,11 +2958,17 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       const activeOrgId = headerOrgId || profile?.default_organization_id;
 
       if (method === "PUT") {
+        if (activeOrgId) {
+          const userRole = await getOrgMemberRole(activeOrgId, session.user.id);
+          if (!userRole) return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+        }
+
         const updateData = { ...body };
         delete updateData.id;
         delete updateData._id;
         delete updateData.userId;
         delete updateData.user_id;
+        delete updateData.organization_id;
 
         const dbPayload = taskToDb(updateData);
         let query = supabase.from("tasks").update(dbPayload).eq("id", id);
@@ -2393,8 +2978,9 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           query = query.eq("userId", session.user.id);
         }
 
-        const { data, error } = await query.select().single();
+        const { data, error } = await query.select().maybeSingle();
         if (error) return mockResponse({ error: error.message }, 400);
+        if (!data) return mockResponse({ error: "Tarefa não encontrada ou nenhuma alteração realizada." }, 404);
         return mockResponse(taskFromDb(data));
       } else if (method === "DELETE") {
         const { data: task, error: fetchErr } = await supabase
@@ -2427,9 +3013,93 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           query = query.eq("userId", session.user.id);
         }
 
-        const { error } = await query;
+        const { data: delResult, error } = await query.select();
         if (error) return mockResponse({ error: error.message }, 400);
-        return mockResponse({ success: true });
+        if (!delResult || delResult.length === 0) {
+          return mockResponse({ error: "Tarefa não encontrada para exclusão ou nenhuma linha afetada." }, 404);
+        }
+        return mockResponse({ success: true, deletedId: id });
+      }
+    }
+
+    // 9. CLIENT HISTORY APPEND (RPC ATÔMICA & APPEND-ONLY)
+    const clientHistoryMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/history$/);
+    if (clientHistoryMatch && method === "POST") {
+      const session = await getActiveUserSession();
+      if (!session?.user) return mockResponse({ error: "Não autorizado" }, 401);
+      const clientId = clientHistoryMatch[1];
+      const { type, description } = body || {};
+
+      if (!description || !String(description).trim()) {
+        return mockResponse({ error: "Descrição do evento de histórico é obrigatória." }, 400);
+      }
+
+      const { data: profile } = await supabase.from("profiles").select("name").eq("id", session.user.id).maybeSingle();
+      const userName = profile?.name || session.user.email || "Corretor";
+
+      const { data, error } = await supabase.rpc("append_client_history_event", {
+        p_client_id: clientId,
+        p_type: type || "note",
+        p_description: String(description).trim(),
+        p_user_name: userName
+      });
+
+      if (error) {
+        console.error("Erro na RPC append_client_history_event:", error);
+        return mockResponse({ error: error.message }, 400);
+      }
+
+      return mockResponse(data, 201);
+    }
+
+    // 10. SETTINGS (CONFIGURAÇÕES DO USUÁRIO / ORGANIZAÇÃO)
+    if (pathname === "/api/settings") {
+      const session = await getActiveUserSession();
+      if (!session?.user) return mockResponse([], 401);
+
+      const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
+      const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
+      const activeOrgId = headerOrgId || profile?.default_organization_id;
+
+      if (method === "GET") {
+        let query = supabase.from("settings").select("*");
+        if (activeOrgId) {
+          query = query.eq("organization_id", activeOrgId);
+        } else {
+          query = query.or(`user_id.eq.${session.user.id},userId.eq.${session.user.id}`);
+        }
+        const { data, error } = await query;
+        if (error) return mockResponse({ error: error.message }, 400);
+        return mockResponse(data || []);
+      } else if (method === "POST" || method === "PUT") {
+        const { key, value } = body || {};
+        if (!key || !String(key).trim()) {
+          return mockResponse({ error: "Chave de configuração é obrigatória." }, 400);
+        }
+
+        const cleanKey = String(key).trim();
+        const cleanVal = typeof value === "string" ? value : JSON.stringify(value);
+
+        const { data, error } = await supabase
+          .from("settings")
+          .upsert({
+            userId: session.user.id,
+            user_id: session.user.id,
+            organization_id: activeOrgId || null,
+            key: cleanKey,
+            value: cleanVal,
+            updatedAt: new Date().toISOString()
+          })
+          .select()
+          .maybeSingle();
+
+        if (error) {
+          return mockResponse({ error: error.message }, 400);
+        }
+        if (!data) {
+          return mockResponse({ error: "Nenhuma linha afetada ao salvar configuração." }, 404);
+        }
+        return mockResponse(data);
       }
     }
 
@@ -2471,8 +3141,15 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
   // LOGS ENDPOINT (Central Error Monitoring)
   if (pathname === "/api/logs" && method === "POST") {
-    console.log(`[CLIENT MONITORING LOG - ${body?.level?.toUpperCase() || "ERROR"}]`, body?.message, body?.stack || "");
-    return mockResponse({ success: true, timestamp: new Date().toISOString() });
+    try {
+      const targetHost = typeof window !== "undefined" && window.location?.origin
+        ? window.location.origin
+        : "http://localhost:3000";
+      const fetchFn = typeof window !== "undefined" ? window.fetch : fetch;
+      return await fetchFn(`${targetHost}/api/logs`, init);
+    } catch {
+      return mockResponse({ success: true, timestamp: new Date().toISOString() });
+    }
   }
 
   // 1. SYSTEM STATUS
@@ -2895,19 +3572,15 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
     return mockResponse({ url: body?.dataUrl || "https://images.unsplash.com/photo-1564013799919-ab600027ffc6?auto=format&fit=crop&w=800&q=80" });
   }
 
-  // 10. AI GENERATE PROPERTY DESCRIPTION
+  // 10. AI GENERATE PROPERTY DESCRIPTION (GROUNDING FACTUAL)
   if (pathname === "/api/ai/generate-description") {
-    const { title, type, condition, modality, neighborhood, city, price, bedrooms, suites, bathrooms, parkingSpots, area, amenities } = body;
-    const priceStr = price ? Number(price).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }) : "Sob Consulta";
-    const amenitiesStr = amenities && amenities.length > 0 ? amenities.join(", ") : "Lazer completo, segurança 24h";
-
-    const professional = `Excelente oportunidade imobiliária em região valorizada. Apresentamos este primoroso ${type || "Imóvel"} de ${condition || "excelente estado"}, com acabamentos impecáveis e excelente aproveitamento de espaços. Situado no cobiçado bairro ${neighborhood || "Bairro Nobre"} de ${city || "Uberlândia"}, ele conta com ${area || 100}m² de área privativa muito bem distribuída. Dispõe de ${bedrooms || 3} dormitórios generosos, sendo ${suites || 1} suíte(s), ideal para garantir total privacidade e bem-estar. O condomínio oferece infraestrutura robusta incluindo: ${amenitiesStr}. Oferecido para ${modality || "Venda"} por apenas ${priceStr}. Agende sua visita e conheça todos os diferenciais!`;
-
-    const whatsapp = `🚀 *OPORTUNIDADE DE OURO!* 🚀\n\nConfira esse espetacular *${type || "Imóvel"}* em *${neighborhood || "Bairro Nobre"}* (${city || "Uberlândia"})!\n\n✨ *Diferenciais de peso:*\n• Espaço: ${area || 100}m² de conforto total\n• Quartos: ${bedrooms || 3} amplos (${suites || 1} suíte privativa)\n• Vagas: ${parkingSpots || 1} vaga(s) reservada(s)\n• Lazer do condomínio: ${amenitiesStr}\n\n💵 *Preço Incrível:* ${priceStr}\n\nPerfeito para morar ou investir com alta rentabilidade. Fale comigo agora e agende sua visita! 📲`;
-
-    const portal = `Diga olá para a sua nova conquista! Amplo e moderno ${type || "Imóvel"} de ${area || 100}m² privativos, em localização estratégica e privilegiada dentro do bairro ${neighborhood || "Bairro Nobre"}. Living acolhedor para dois ambientes com excelente iluminação natural, copa-cozinha equipada com excelentes armários planejados, área de serviços independente e ${parkingSpots || 1} vagas de garagem exclusivas. Planta versátil de ${bedrooms || 3} dormitórios com ${suites || 1} suíte acolhedora. Segurança 24 horas e lazer agradável (${amenitiesStr}). Oportunidade por ${priceStr}. Aceita financiamento bancário imediato.`;
-
-    return mockResponse({ professional, whatsapp, portal });
+    const factual = buildFactualDescription(body || {});
+    return mockResponse({
+      ...factual,
+      isFallback: true,
+      source: "fallback",
+      fallbackReason: "Ambiente local/simulado. Descrição gerada via regras factuais sem alucinação."
+    });
   }
 
   // 11. AI SUGGEST TASKS
@@ -3081,7 +3754,14 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   const method = (init?.method || "GET").toUpperCase();
-  console.log(`[apiFetch REQUEST] ${method} ${url}`, init?.body ? `Body length: ${(init.body as string).length}` : '');
+
+  const isProduction =
+    (typeof process !== "undefined" && process.env?.NODE_ENV === "production") ||
+    (typeof import.meta !== "undefined" && (import.meta as any).env?.PROD);
+
+  if (!isProduction) {
+    console.log(`[apiFetch REQUEST] ${method} ${url}`);
+  }
 
   try {
     const res = await _apiFetchInternal(input, init);
@@ -3090,12 +3770,24 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
     try {
       const resClone = res.clone();
       const text = await resClone.text();
-      console.log(`[apiFetch RESPONSE] ${method} ${url} Status: ${res.status}`, text.slice(0, 200));
+      if (!isProduction) {
+        console.log(`[apiFetch RESPONSE] ${method} ${url} Status: ${res.status}`);
+      }
       
-      const isHtml = text.trim().startsWith("<") || text.toLowerCase().includes("<!doctype html>") || text.toLowerCase().includes("<html>") || text.toLowerCase().includes("the page") || text.toLowerCase().includes("cannot get") || text.toLowerCase().includes("cannot post");
+      const contentType = (res.headers.get("content-type") || "").toLowerCase();
+      const trimmedText = text.trim();
+
+      // Classifica como HTML usando status e Content-Type, sem palavras genéricas de corpo JSON
+      const isHtml =
+        (contentType.includes("text/html") ||
+          trimmedText.startsWith("<!DOCTYPE") ||
+          trimmedText.startsWith("<!doctype") ||
+          trimmedText.startsWith("<html") ||
+          trimmedText.startsWith("<body")) &&
+        !contentType.includes("application/json");
       
-      if (isHtml) {
-        console.error(`[apiFetch HTML/ERROR RESPONSE DETECTED for ${method} ${url}]:`, text);
+      if (isHtml && res.status >= 400) {
+        console.error(`[apiFetch HTML/ERROR RESPONSE DETECTED for ${method} ${url}]:`, text.slice(0, 300));
         
         // Generate a helpful user-facing error message based on url/context
         let friendlyMessage = `O servidor retornou uma resposta inesperada em formato de página da Web (HTML, Status ${res.status}).`;

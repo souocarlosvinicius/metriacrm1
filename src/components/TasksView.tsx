@@ -2,6 +2,13 @@ import React, { useState, useEffect } from "react";
 import { Task, Client, Property, User as UserType } from "../types";
 import { apiFetch } from "../api";
 import { motion, AnimatePresence } from "motion/react";
+import {
+  getLocalDateString,
+  getLocalTimeString,
+  addDaysToLocalDateString,
+  isTaskOverdue,
+  formatDateBR
+} from "../utils/dateUtils";
 import { 
   Calendar, 
   Clock, 
@@ -63,9 +70,7 @@ function serializeTaskDescription(realDescription: string, metadata: TaskMetadat
 function getOneDayBefore(dateStr: string): string {
   if (!dateStr) return "";
   try {
-    const date = new Date(dateStr + "T00:00:00");
-    date.setDate(date.getDate() - 1);
-    return date.toISOString().split("T")[0];
+    return addDaysToLocalDateString(dateStr, -1);
   } catch (e) {
     return "";
   }
@@ -133,7 +138,7 @@ export default function TasksView({
   onClearPrefilledClient
 }: TasksViewProps) {
   const [internalSelectedDate, setInternalSelectedDate] = useState(() => {
-    return new Date().toISOString().split("T")[0];
+    return getLocalDateString();
   });
 
   const selectedDate = propSelectedDate !== undefined ? propSelectedDate : internalSelectedDate;
@@ -215,30 +220,17 @@ export default function TasksView({
   // Helper to determine task status dynamically
   const getTaskStatus = (task: Task): "pendente" | "concluída" | "atrasada" => {
     if (task.completed) return "concluída";
-    
-    const todayStr = new Date().toISOString().split("T")[0];
-    if (task.date < todayStr) {
+    if (isTaskOverdue(task.date, task.time)) {
       return "atrasada";
-    } else if (task.date === todayStr) {
-      // Check time
-      const now = new Date();
-      const currentHM = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-      if (task.time < currentHM) {
-        return "atrasada";
-      }
     }
     return "pendente";
   };
 
   // Organize tasks by categories
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = getLocalDateString();
   
   // Calculate date 7 days from now
-  const next7DaysStr = (() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 7);
-    return d.toISOString().split("T")[0];
-  })();
+  const next7DaysStr = addDaysToLocalDateString(todayStr, 7);
 
   const categorizedTasks = React.useMemo(() => {
     const hoje: Task[] = [];

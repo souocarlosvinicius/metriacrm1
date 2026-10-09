@@ -1,0 +1,49 @@
+name: CI - Entrega Reproduzível e Testes de Segurança
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  verify-and-test:
+    name: Verificação Completa e Testes de Segurança
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout do Código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Instalação Limpa e Reproduzível (npm ci)
+        run: npm ci
+
+      - name: Verificação de Tipos TypeScript (Typecheck)
+        run: npm run lint
+
+      - name: Compilação de Produção (Vite + Server Bundle)
+        run: npm run build
+
+      - name: Auditoria de Segurança de Dependências
+        run: npm audit --audit-level=high
+
+      - name: Executar Testes Automatizados de Segurança e Funcionalidades
+        env:
+          NODE_ENV: test
+          PORT: 3000
+        run: |
+          npx tsx tests/step1_regression.test.ts
+          npx tsx tests/step2_isolation.test.ts
+          npx tsx tests/step4_auth_org_invites.test.ts
+          npx tsx tests/step5_queries_settings_writes.test.ts
+          npx tsx tests/step6_gemini_security_quality.test.ts
+          npx tsx tests/step7_storage_csv_logs_sentry.test.ts
+          npx tsx tests/step8_production_delivery.test.ts
+          npx tsx tests/step9_homologation_and_release_readiness.test.ts

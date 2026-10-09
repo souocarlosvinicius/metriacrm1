@@ -1,5 +1,6 @@
 import { apiFetch } from "../api";
 import * as Sentry from "@sentry/react";
+import { redactSensitiveData, redactSensitiveString } from "./redact";
 
 export interface LogEntry {
   level: "error" | "warn" | "info";
@@ -14,8 +15,27 @@ export interface LogEntry {
 // In-memory set to prevent flooding duplicated log requests
 const recentLogs = new Set<string>();
 
+// Deduplicação de exceções para evitar disparos redundantes (RootBoundary, ErrorBoundary, window.onerror)
+const capturedExceptions = new WeakSet<object>();
+
+/**
+ * Determina se o Sentry está configurado com um DSN válido
+ */
+export function isSentryConfigured(): boolean {
+  const dsn =
+    (typeof process !== "undefined" && process.env?.VITE_SENTRY_DSN) ||
+    (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_SENTRY_DSN) ||
+    "";
+  return Boolean(dsn && dsn.trim().length > 0 && dsn.startsWith("http"));
+}
+
 export async function sendLog(entry: LogEntry): Promise<void> {
-  const logKey = `${entry.level}:${entry.message}:${(entry.stack || "").slice(0, 100)}`;
+  const sanitizedMessage = redactSensitiveString(entry.message || "Exceção não tratada");
+  const sanitizedStack = entry.stack ? redactSensitiveString(entry.stack) : "";
+  const sanitizedUrl = entry.url ? redactSensitiveString(entry.url) : (typeof window !== "undefined" ? window.location.href : "");
+  const sanitizedContext = entry.context ? redactSensitiveData(entry.context) : {};
+
+  const logKey = `${entry.level}:${sanitizedMessage}:${sanitizedStack.slice(0, 100)}`;
   if (recentLogs.has(logKey)) {
     return; // throttle repeated log entries
   }
@@ -24,30 +44,39 @@ export async function sendLog(entry: LogEntry): Promise<void> {
 
   const payload: LogEntry = {
     level: entry.level || "error",
-    message: entry.message || "Exceção não tratada",
-    stack: entry.stack || "",
-    url: typeof window !== "undefined" ? window.location.href : "",
+    message: sanitizedMessage,
+    stack: sanitizedStack,
+    url: sanitizedUrl,
     userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
     timestamp: entry.timestamp || new Date().toISOString(),
-    context: entry.context || {}
+    context: sanitizedContext
   };
 
-  // Always log locally to browser console
-  console.error(`[Central Logger] [${payload.level.toUpperCase()}] ${payload.message}`, payload);
+  // Log local no console com dados devidamente redigidos
+  const isProduction =
+    (typeof process !== "undefined" && process.env?.NODE_ENV === "production") ||
+    (typeof import.meta !== "undefined" && (import.meta as any).env?.PROD);
 
-  // Send breadcrumb to Sentry
-  try {
-    Sentry.addBreadcrumb({
-      category: "app.logger",
-      message: payload.message,
-      level: payload.level === "error" ? "error" : payload.level === "warn" ? "warning" : "info",
-      data: payload.context,
-      timestamp: Date.now() / 1000
-    });
-  } catch {
-    // Sentry safe fallback
+  if (!isProduction) {
+    console.error(`[Central Logger] [${payload.level.toUpperCase()}] ${payload.message}`, payload);
   }
 
+  // Envio de breadcrumb ao Sentry apenas se DSN estiver presente
+  if (isSentryConfigured()) {
+    try {
+      Sentry.addBreadcrumb({
+        category: "app.logger",
+        message: payload.message,
+        level: payload.level === "error" ? "error" : payload.level === "warn" ? "warning" : "info",
+        data: payload.context,
+        timestamp: Date.now() / 1000
+      });
+    } catch {
+      // Sentry safe fallback
+    }
+  }
+
+  // Encaminha ao endpoint real do servidor
   try {
     await apiFetch("/api/logs", {
       method: "POST",
@@ -55,7 +84,10 @@ export async function sendLog(entry: LogEntry): Promise<void> {
       body: JSON.stringify(payload)
     });
   } catch (err) {
-    console.error("[Central Logger] Falha ao enviar log para /api/logs:", err);
+    // Falha silenciosa para evitar cascata de erros no logger
+    if (!isProduction) {
+      console.warn("[Central Logger] Falha ao enviar log para /api/logs:", err);
+    }
   }
 }
 
@@ -63,28 +95,46 @@ export function logError(error: Error | string | unknown, context?: Record<strin
   let message = "Exceção não tratada";
   let stack: string | undefined;
 
+  // Previne captura redundante do mesmo objeto de erro
+  const isObjectError = Boolean(error && typeof error === "object");
+  const alreadyCaptured = isObjectError && capturedExceptions.has(error as object);
+  if (isObjectError && !alreadyCaptured) {
+    capturedExceptions.add(error as object);
+  }
+
+  const sanitizedContext = context ? redactSensitiveData(context) : undefined;
+
   if (error instanceof Error) {
     message = error.message;
     stack = error.stack;
-    try {
-      Sentry.captureException(error, { extra: context });
-    } catch {
-      // Sentry safe fallback
+    if (isSentryConfigured() && !alreadyCaptured) {
+      try {
+        Sentry.captureException(error, { extra: sanitizedContext });
+      } catch {
+        // Sentry safe fallback
+      }
     }
   } else if (typeof error === "string") {
     message = error;
-    try {
-      Sentry.captureMessage(error, { level: "error", extra: context });
-    } catch {
-      // Sentry safe fallback
+    if (isSentryConfigured()) {
+      try {
+        Sentry.captureMessage(redactSensitiveString(error), { level: "error", extra: sanitizedContext });
+      } catch {
+        // Sentry safe fallback
+      }
     }
   } else if (error && typeof error === "object") {
     message = (error as any).message || JSON.stringify(error);
     stack = (error as any).stack;
-    try {
-      Sentry.captureMessage(message, { level: "error", extra: { ...context, rawError: error } });
-    } catch {
-      // Sentry safe fallback
+    if (isSentryConfigured() && !alreadyCaptured) {
+      try {
+        Sentry.captureMessage(redactSensitiveString(message), {
+          level: "error",
+          extra: { ...sanitizedContext, rawError: redactSensitiveData(error) }
+        });
+      } catch {
+        // Sentry safe fallback
+      }
     }
   }
 
@@ -92,7 +142,7 @@ export function logError(error: Error | string | unknown, context?: Record<strin
     level: "error",
     message,
     stack,
-    context
+    context: sanitizedContext
   });
 }
 
@@ -105,25 +155,20 @@ export function setupGlobalErrorMonitoring(): () => void {
 
   isGlobalMonitoringSetup = true;
 
-  const handleGlobalError = (event: ErrorEvent) => {
-    // Ignore harmless Vite HMR / websocket connection warnings
-    if (event.message?.includes("vite") || event.message?.includes("websocket")) {
-      return;
-    }
+  const isNoiseError = (err: any): boolean => {
+    const msg = String(err?.message || err?.reason || err || "").toLowerCase();
+    return (
+      msg.includes("websocket") ||
+      msg.includes("closed without opened") ||
+      msg.includes("vite") ||
+      msg.includes("hmr")
+    );
+  };
 
-    if (event.error) {
-      try {
-        Sentry.captureException(event.error, {
-          extra: {
-            filename: event.filename,
-            lineno: event.lineno,
-            colno: event.colno,
-            source: "setupGlobalErrorMonitoring.window.onerror"
-          }
-        });
-      } catch {
-        // Sentry safe fallback
-      }
+  const handleGlobalError = (event: ErrorEvent) => {
+    // Ignora ruídos de Vite HMR / websocket locais
+    if (isNoiseError(event.error) || isNoiseError(event.message)) {
+      return;
     }
 
     logError(event.error || event.message, {
@@ -136,19 +181,8 @@ export function setupGlobalErrorMonitoring(): () => void {
 
   const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
     const reason = event.reason;
-    try {
-      if (reason instanceof Error) {
-        Sentry.captureException(reason, {
-          extra: { source: "setupGlobalErrorMonitoring.unhandledrejection" }
-        });
-      } else {
-        Sentry.captureMessage(String(reason || "Unhandled Promise Rejection"), {
-          level: "error",
-          extra: { source: "setupGlobalErrorMonitoring.unhandledrejection", reason }
-        });
-      }
-    } catch {
-      // Sentry safe fallback
+    if (isNoiseError(reason)) {
+      return;
     }
 
     logError(reason instanceof Error ? reason : String(reason || "Unhandled Promise Rejection"), {
@@ -158,8 +192,6 @@ export function setupGlobalErrorMonitoring(): () => void {
 
   window.addEventListener("error", handleGlobalError);
   window.addEventListener("unhandledrejection", handleUnhandledRejection);
-
-  console.log("[Central Logger] Monitoramento global de exceções e Sentry ativado.");
 
   return () => {
     window.removeEventListener("error", handleGlobalError);

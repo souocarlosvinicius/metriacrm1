@@ -13,6 +13,7 @@ interface LoginViewProps {
 export default function LoginView({ onLoginSuccess, initialRegister = false, onBackToLanding }: LoginViewProps) {
   const [isRegistering, setIsRegistering] = useState(initialRegister);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   // Login Form States
@@ -83,7 +84,13 @@ export default function LoginView({ onLoginSuccess, initialRegister = false, onB
         throw new Error(data.error || "Ocorreu um erro no cadastro.");
       }
 
-      onLoginSuccess(data);
+      if (data.requiresEmailConfirmation) {
+        setSuccessMessage(data.message || "Conta criada! Por favor, verifique seu e-mail para confirmar seu acesso.");
+        setIsRegistering(false);
+        setLoginUsername(regEmail.trim());
+      } else {
+        onLoginSuccess(data);
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -149,6 +156,16 @@ export default function LoginView({ onLoginSuccess, initialRegister = false, onB
             className="mb-6 p-3 bg-error-container text-on-error-container text-xs font-semibold rounded-xl border border-error/20"
           >
             {error}
+          </motion.div>
+        )}
+
+        {successMessage && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="mb-6 p-3 bg-secondary-container text-on-secondary-container text-xs font-semibold rounded-xl border border-secondary/20"
+          >
+            {successMessage}
           </motion.div>
         )}
 

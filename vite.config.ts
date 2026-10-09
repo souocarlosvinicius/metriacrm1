@@ -18,5 +18,21 @@ export default defineConfig(() => {
       // Disable file watching when DISABLE_HMR is true to save CPU resources.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
+    build: {
+      outDir: 'dist/client',
+      sourcemap: false, // Não publica sourcemaps internos no frontend em produção
+      chunkSizeWarningLimit: 1000,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'vendor-react': ['react', 'react-dom'],
+            'vendor-ui': ['lucide-react', 'motion/react'],
+            'vendor-charts': ['recharts'],
+            'vendor-pdf': ['jspdf'],
+            'vendor-supabase': ['@supabase/supabase-js']
+          }
+        }
+      }
+    }
   };
 });

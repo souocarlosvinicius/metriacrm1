@@ -122,8 +122,8 @@ CREATE TABLE IF NOT EXISTS public.organization_members (
   "email" text,
   "phone" text,
   "creci" text,
-  "role" text DEFAULT 'broker', -- 'owner' | 'admin' | 'manager' | 'broker'
-  "status" text DEFAULT 'active', -- 'active' | 'inactive'
+  "role" text DEFAULT 'broker' CHECK (role IN ('owner', 'admin', 'manager', 'broker')),
+  "status" text DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
   "created_at" timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
   "updated_at" timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
   CONSTRAINT unique_org_user UNIQUE (organization_id, user_id)
@@ -134,15 +134,155 @@ CREATE TABLE IF NOT EXISTS public.organization_invites (
   "organization_id" uuid REFERENCES public.organizations(id) ON DELETE CASCADE NOT NULL,
   "invited_email" text NOT NULL,
   "invited_name" text,
-  "role" text DEFAULT 'broker', -- 'owner' | 'admin' | 'manager' | 'broker'
+  "role" text DEFAULT 'broker' CHECK (role IN ('owner', 'admin', 'manager', 'broker')),
   "token" text UNIQUE NOT NULL,
-  "status" text DEFAULT 'pending', -- 'pending' | 'accepted' | 'expired'
+  "status" text DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'expired', 'cancelled')),
   "invited_by" uuid REFERENCES auth.users(id) ON DELETE SET NULL,
   "accepted_by" uuid REFERENCES auth.users(id) ON DELETE SET NULL,
   "expires_at" timestamp with time zone,
   "created_at" timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
   "accepted_at" timestamp with time zone
 );
+
+-- Trigger to atomically bootstrap the first owner upon organization creation
+CREATE OR REPLACE FUNCTION public.handle_organization_bootstrap()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_user_name text;
+  v_user_email text;
+BEGIN
+  IF auth.uid() IS NOT NULL AND NEW.owner_id <> auth.uid() THEN
+    RAISE EXCEPTION 'owner_id deve corresponder ao usuário autenticado';
+  END IF;
+
+  SELECT COALESCE(name, username, 'Proprietário'), email
+  INTO v_user_name, v_user_email
+  FROM public.profiles
+  WHERE id = NEW.owner_id;
+
+  INSERT INTO public.organization_members (
+    organization_id,
+    user_id,
+    name,
+    email,
+    role,
+    status
+  )
+  VALUES (
+    NEW.id,
+    NEW.owner_id,
+    COALESCE(v_user_name, 'Proprietário'),
+    COALESCE(v_user_email, ''),
+    'owner',
+    'active'
+  )
+  ON CONFLICT (organization_id, user_id)
+  DO UPDATE SET
+    role = 'owner',
+    status = 'active';
+
+  UPDATE public.profiles
+  SET default_organization_id = COALESCE(default_organization_id, NEW.id),
+      current_role = 'owner'
+  WHERE id = NEW.owner_id;
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.handle_organization_bootstrap() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS trg_handle_organization_bootstrap ON public.organizations;
+CREATE TRIGGER trg_handle_organization_bootstrap
+AFTER INSERT ON public.organizations
+FOR EACH ROW
+EXECUTE FUNCTION public.handle_organization_bootstrap();
+
+-- Trigger to prevent self-promotion, self-reactivation, and protect organization owner
+CREATE OR REPLACE FUNCTION public.check_organization_member_update()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_org_owner_id uuid;
+BEGIN
+  IF v_actor_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF NEW.organization_id <> OLD.organization_id THEN
+    RAISE EXCEPTION 'organization_id cannot be changed';
+  END IF;
+
+  IF NEW.user_id <> OLD.user_id THEN
+    RAISE EXCEPTION 'user_id cannot be changed';
+  END IF;
+
+  IF NEW.role NOT IN ('owner', 'admin', 'manager', 'broker') THEN
+    RAISE EXCEPTION 'Invalid role: %', NEW.role;
+  END IF;
+
+  IF NEW.status NOT IN ('active', 'inactive') THEN
+    RAISE EXCEPTION 'Invalid status: %', NEW.status;
+  END IF;
+
+  IF OLD.user_id = v_actor_id AND NEW.role <> OLD.role THEN
+    RAISE EXCEPTION 'Self-promotion is prohibited: you cannot modify your own role';
+  END IF;
+
+  IF OLD.user_id = v_actor_id AND OLD.status = 'inactive' AND NEW.status = 'active' THEN
+    RAISE EXCEPTION 'Self-reactivation is prohibited: only an administrator can reactivate your account';
+  END IF;
+
+  SELECT owner_id INTO v_org_owner_id
+  FROM public.organizations
+  WHERE id = OLD.organization_id;
+
+  IF OLD.user_id = v_org_owner_id THEN
+    IF NEW.role <> 'owner' THEN
+      RAISE EXCEPTION 'Cannot demote the organization owner';
+    END IF;
+    IF NEW.status <> 'active' THEN
+      RAISE EXCEPTION 'Cannot inactivate the organization owner';
+    END IF;
+  END IF;
+
+  IF NEW.role <> OLD.role OR NEW.status <> OLD.status THEN
+    v_actor_role := public.get_user_role(OLD.organization_id);
+
+    IF v_actor_role NOT IN ('owner', 'admin') THEN
+      RAISE EXCEPTION 'Access denied: only organization owner or admin can update member roles or status';
+    END IF;
+
+    IF NEW.role = 'owner' AND OLD.role <> 'owner' AND v_actor_role <> 'owner' THEN
+      RAISE EXCEPTION 'Access denied: only the organization owner can appoint another owner';
+    END IF;
+
+    IF v_actor_role = 'admin' AND OLD.role IN ('admin', 'owner') THEN
+      RAISE EXCEPTION 'Access denied: admins cannot modify another admin or owner';
+    END IF;
+  END IF;
+
+  NEW.updated_at := timezone('utc'::text, now());
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.check_organization_member_update() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS trg_check_organization_member_update ON public.organization_members;
+CREATE TRIGGER trg_check_organization_member_update
+BEFORE UPDATE ON public.organization_members
+FOR EACH ROW
+EXECUTE FUNCTION public.check_organization_member_update();
 
 
 -- ==========================================
@@ -600,23 +740,52 @@ CREATE POLICY "Members SELECT" ON public.organization_members
   FOR SELECT TO authenticated USING (public.is_org_member(organization_id));
 
 CREATE POLICY "Members INSERT" ON public.organization_members
-  FOR INSERT TO authenticated WITH CHECK (public.is_org_admin(organization_id) OR auth.uid() = user_id);
+  FOR INSERT TO authenticated WITH CHECK (
+    public.is_org_admin(organization_id)
+    OR (
+      EXISTS (
+        SELECT 1 FROM public.organizations o
+        WHERE o.id = organization_id AND o.owner_id = auth.uid()
+      )
+      AND user_id = auth.uid()
+      AND role = 'owner'
+    )
+  );
 
 CREATE POLICY "Members UPDATE" ON public.organization_members
-  FOR UPDATE TO authenticated USING (user_id = auth.uid() OR public.is_org_admin(organization_id));
+  FOR UPDATE TO authenticated
+  USING (
+    public.is_org_admin(organization_id)
+    OR (user_id = auth.uid() AND public.is_org_member(organization_id))
+  )
+  WITH CHECK (
+    public.is_org_admin(organization_id)
+    OR (user_id = auth.uid() AND public.is_org_member(organization_id))
+  );
 
 CREATE POLICY "Members DELETE" ON public.organization_members
-  FOR DELETE TO authenticated USING (public.is_org_admin(organization_id));
+  FOR DELETE TO authenticated
+  USING (
+    public.is_org_admin(organization_id)
+    AND user_id <> (SELECT owner_id FROM public.organizations WHERE id = organization_id)
+  );
 
 -- INVITES POLICIES
+DROP POLICY IF EXISTS "Invites SELECT" ON public.organization_invites;
+DROP POLICY IF EXISTS "Invites INSERT" ON public.organization_invites;
+DROP POLICY IF EXISTS "Invites UPDATE" ON public.organization_invites;
+DROP POLICY IF EXISTS "Invites DELETE" ON public.organization_invites;
+
 CREATE POLICY "Invites SELECT" ON public.organization_invites
-  FOR SELECT TO authenticated USING (public.is_org_member(organization_id));
+  FOR SELECT TO authenticated USING (public.is_org_admin(organization_id));
 
 CREATE POLICY "Invites INSERT" ON public.organization_invites
   FOR INSERT TO authenticated WITH CHECK (public.is_org_admin(organization_id));
 
 CREATE POLICY "Invites UPDATE" ON public.organization_invites
-  FOR UPDATE TO authenticated USING (public.is_org_member(organization_id) OR status = 'pending');
+  FOR UPDATE TO authenticated 
+  USING (public.is_org_admin(organization_id))
+  WITH CHECK (public.is_org_admin(organization_id));
 
 CREATE POLICY "Invites DELETE" ON public.organization_invites
   FOR DELETE TO authenticated USING (public.is_org_admin(organization_id));
@@ -624,11 +793,14 @@ CREATE POLICY "Invites DELETE" ON public.organization_invites
 -- PROFILES POLICIES
 CREATE POLICY "Profiles SELECT" ON public.profiles
   FOR SELECT TO authenticated USING (
-    id = auth.uid() OR 
+    profiles.id = auth.uid() OR 
     EXISTS (
       SELECT 1 FROM public.organization_members m1 
       JOIN public.organization_members m2 ON m1.organization_id = m2.organization_id 
-      WHERE m1.user_id = auth.uid() AND m2.user_id = id
+      WHERE m1.user_id = auth.uid() 
+        AND m1.status = 'active'
+        AND m2.user_id = profiles.id
+        AND m2.status = 'active'
     )
   );
 
@@ -639,288 +811,600 @@ CREATE POLICY "Profiles UPDATE" ON public.profiles
   FOR UPDATE TO authenticated USING (auth.uid() = id);
 
 -- CLIENTS POLICIES
+DROP POLICY IF EXISTS "Clients SELECT" ON public.clients;
 CREATE POLICY "Clients SELECT" ON public.clients
   FOR SELECT TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
+DROP POLICY IF EXISTS "Clients INSERT" ON public.clients;
 CREATE POLICY "Clients INSERT" ON public.clients
   FOR INSERT TO authenticated WITH CHECK (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND public.is_org_member(organization_id)
-  );
-
-CREATE POLICY "Clients UPDATE" ON public.clients
-  FOR UPDATE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND auth.uid() = "userId"
     )
   );
 
+DROP POLICY IF EXISTS "Clients UPDATE" ON public.clients;
+CREATE POLICY "Clients UPDATE" ON public.clients
+  FOR UPDATE TO authenticated
+  USING (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  )
+  WITH CHECK (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  );
+
+DROP POLICY IF EXISTS "Clients DELETE" ON public.clients;
 CREATE POLICY "Clients DELETE" ON public.clients
   FOR DELETE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
 -- PROPERTIES POLICIES
+DROP POLICY IF EXISTS "Properties SELECT" ON public.properties;
 CREATE POLICY "Properties SELECT" ON public.properties
   FOR SELECT TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND public.is_org_member(organization_id)
-  );
-
-CREATE POLICY "Properties INSERT" ON public.properties
-  FOR INSERT TO authenticated WITH CHECK (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND public.is_org_member(organization_id)
-  );
-
-CREATE POLICY "Properties UPDATE" ON public.properties
-  FOR UPDATE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
     )
   );
 
+DROP POLICY IF EXISTS "Properties INSERT" ON public.properties;
+CREATE POLICY "Properties INSERT" ON public.properties
+  FOR INSERT TO authenticated WITH CHECK (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND auth.uid() = "userId"
+    )
+  );
+
+DROP POLICY IF EXISTS "Properties UPDATE" ON public.properties;
+CREATE POLICY "Properties UPDATE" ON public.properties
+  FOR UPDATE TO authenticated
+  USING (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  )
+  WITH CHECK (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  );
+
+DROP POLICY IF EXISTS "Properties DELETE" ON public.properties;
 CREATE POLICY "Properties DELETE" ON public.properties
   FOR DELETE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = "userId"
+      )
     )
   );
 
 -- TASKS POLICIES
+DROP POLICY IF EXISTS "Tasks SELECT" ON public.tasks;
 CREATE POLICY "Tasks SELECT" ON public.tasks
   FOR SELECT TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
+DROP POLICY IF EXISTS "Tasks INSERT" ON public.tasks;
 CREATE POLICY "Tasks INSERT" ON public.tasks
   FOR INSERT TO authenticated WITH CHECK (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND public.is_org_member(organization_id)
-  );
-
-CREATE POLICY "Tasks UPDATE" ON public.tasks
-  FOR UPDATE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND auth.uid() = "userId"
     )
   );
 
+DROP POLICY IF EXISTS "Tasks UPDATE" ON public.tasks;
+CREATE POLICY "Tasks UPDATE" ON public.tasks
+  FOR UPDATE TO authenticated
+  USING (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  )
+  WITH CHECK (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  );
+
+DROP POLICY IF EXISTS "Tasks DELETE" ON public.tasks;
 CREATE POLICY "Tasks DELETE" ON public.tasks
   FOR DELETE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
 -- VISITS POLICIES
+DROP POLICY IF EXISTS "Visits SELECT" ON public.visits;
 CREATE POLICY "Visits SELECT" ON public.visits
   FOR SELECT TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
+DROP POLICY IF EXISTS "Visits INSERT" ON public.visits;
 CREATE POLICY "Visits INSERT" ON public.visits
   FOR INSERT TO authenticated WITH CHECK (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND public.is_org_member(organization_id)
-  );
-
-CREATE POLICY "Visits UPDATE" ON public.visits
-  FOR UPDATE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND auth.uid() = "userId"
     )
   );
 
+DROP POLICY IF EXISTS "Visits UPDATE" ON public.visits;
+CREATE POLICY "Visits UPDATE" ON public.visits
+  FOR UPDATE TO authenticated
+  USING (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  )
+  WITH CHECK (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  );
+
+DROP POLICY IF EXISTS "Visits DELETE" ON public.visits;
 CREATE POLICY "Visits DELETE" ON public.visits
   FOR DELETE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
 -- PROPOSALS POLICIES
+DROP POLICY IF EXISTS "Proposals SELECT" ON public.proposals;
 CREATE POLICY "Proposals SELECT" ON public.proposals
   FOR SELECT TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
+DROP POLICY IF EXISTS "Proposals INSERT" ON public.proposals;
 CREATE POLICY "Proposals INSERT" ON public.proposals
   FOR INSERT TO authenticated WITH CHECK (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND public.is_org_member(organization_id)
-  );
-
-CREATE POLICY "Proposals UPDATE" ON public.proposals
-  FOR UPDATE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND auth.uid() = "userId"
     )
   );
 
+DROP POLICY IF EXISTS "Proposals UPDATE" ON public.proposals;
+CREATE POLICY "Proposals UPDATE" ON public.proposals
+  FOR UPDATE TO authenticated
+  USING (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  )
+  WITH CHECK (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  );
+
+DROP POLICY IF EXISTS "Proposals DELETE" ON public.proposals;
 CREATE POLICY "Proposals DELETE" ON public.proposals
   FOR DELETE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
 -- TRANSACTIONS POLICIES
+DROP POLICY IF EXISTS "Transactions SELECT" ON public.transactions;
 CREATE POLICY "Transactions SELECT" ON public.transactions
   FOR SELECT TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
+DROP POLICY IF EXISTS "Transactions INSERT" ON public.transactions;
 CREATE POLICY "Transactions INSERT" ON public.transactions
   FOR INSERT TO authenticated WITH CHECK (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND public.is_org_member(organization_id)
-  );
-
-CREATE POLICY "Transactions UPDATE" ON public.transactions
-  FOR UPDATE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND auth.uid() = "userId"
     )
   );
 
+DROP POLICY IF EXISTS "Transactions UPDATE" ON public.transactions;
+CREATE POLICY "Transactions UPDATE" ON public.transactions
+  FOR UPDATE TO authenticated
+  USING (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  )
+  WITH CHECK (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  );
+
+DROP POLICY IF EXISTS "Transactions DELETE" ON public.transactions;
 CREATE POLICY "Transactions DELETE" ON public.transactions
   FOR DELETE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
 -- SETTINGS POLICIES
+DROP POLICY IF EXISTS "Settings SELECT" ON public.settings;
 CREATE POLICY "Settings SELECT" ON public.settings
   FOR SELECT TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND public.is_org_member(organization_id)
-  );
-
-CREATE POLICY "Settings INSERT" ON public.settings
-  FOR INSERT TO authenticated WITH CHECK (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND public.is_org_member(organization_id)
-  );
-
-CREATE POLICY "Settings UPDATE" ON public.settings
-  FOR UPDATE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = user_id
+        OR auth.uid() = "userId"
+      )
     )
   );
 
+DROP POLICY IF EXISTS "Settings INSERT" ON public.settings;
+CREATE POLICY "Settings INSERT" ON public.settings
+  FOR INSERT TO authenticated WITH CHECK (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = user_id
+        OR auth.uid() = "userId"
+      )
+    )
+  );
+
+DROP POLICY IF EXISTS "Settings UPDATE" ON public.settings;
+CREATE POLICY "Settings UPDATE" ON public.settings
+  FOR UPDATE TO authenticated
+  USING (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = user_id
+        OR auth.uid() = "userId"
+      )
+    )
+  )
+  WITH CHECK (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = user_id
+        OR auth.uid() = "userId"
+      )
+    )
+  );
+
+DROP POLICY IF EXISTS "Settings DELETE" ON public.settings;
 CREATE POLICY "Settings DELETE" ON public.settings
   FOR DELETE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = user_id
+        OR auth.uid() = "userId"
+      )
     )
   );
 
 -- HISTORY EVENTS POLICIES
+DROP POLICY IF EXISTS "History Events SELECT" ON public.history_events;
 CREATE POLICY "History Events SELECT" ON public.history_events
   FOR SELECT TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
+DROP POLICY IF EXISTS "History Events INSERT" ON public.history_events;
 CREATE POLICY "History Events INSERT" ON public.history_events
   FOR INSERT TO authenticated WITH CHECK (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND public.is_org_member(organization_id)
-  );
-
-CREATE POLICY "History Events UPDATE" ON public.history_events
-  FOR UPDATE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND auth.uid() = "userId"
     )
   );
 
+DROP POLICY IF EXISTS "History Events UPDATE" ON public.history_events;
+CREATE POLICY "History Events UPDATE" ON public.history_events
+  FOR UPDATE TO authenticated
+  USING (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  )
+  WITH CHECK (
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
+    )
+  );
+
+DROP POLICY IF EXISTS "History Events DELETE" ON public.history_events;
 CREATE POLICY "History Events DELETE" ON public.history_events
   FOR DELETE TO authenticated USING (
-    organization_id IS NULL AND auth.uid() = "userId"
-    OR organization_id IS NOT NULL AND (
-      public.is_org_manager_or_higher(organization_id)
-      OR auth.uid() = assigned_to
-      OR auth.uid() = "userId"
+    (organization_id IS NULL AND auth.uid() = "userId")
+    OR
+    (
+      organization_id IS NOT NULL
+      AND public.is_org_member(organization_id)
+      AND (
+        public.is_org_manager_or_higher(organization_id)
+        OR auth.uid() = assigned_to
+        OR auth.uid() = "userId"
+      )
     )
   );
 
@@ -1057,7 +1541,7 @@ CREATE POLICY "Allow authenticated users to delete own property-images" ON stora
 
 
 -- ==========================================
--- 17. CASCADE DELETE CLIENT RPC FUNCTION (MODIFIED)
+-- 17. CASCADE DELETE CLIENT RPC FUNCTION (HARDENED)
 -- ==========================================
 
 DROP FUNCTION IF EXISTS public.delete_client_cascade(uuid);
@@ -1065,74 +1549,871 @@ CREATE OR REPLACE FUNCTION public.delete_client_cascade(p_client_id uuid)
 RETURNS json
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_user_id uuid;
   v_client_owner uuid;
   v_client_org uuid;
+  v_client_assigned_to uuid;
   v_user_role text;
+  v_is_authorized boolean := FALSE;
+  v_is_active_member boolean := FALSE;
 BEGIN
-  -- Get current authenticated user
+  -- 1. Exige usuário autenticado
   v_user_id := auth.uid();
-  
-  -- Check if user is authenticated
   IF v_user_id IS NULL THEN
     RAISE EXCEPTION 'Not authenticated';
   END IF;
 
-  -- Get client detail
-  SELECT "userId", organization_id INTO v_client_owner, v_client_org
+  -- 2. Localiza e bloqueia o cliente na transação para garantir isolamento
+  SELECT "userId", organization_id, assigned_to
+  INTO v_client_owner, v_client_org, v_client_assigned_to
   FROM public.clients
-  WHERE id = p_client_id;
+  WHERE id = p_client_id
+  FOR UPDATE;
 
-  -- Verify client exists
-  IF v_client_owner IS NULL THEN
+  IF NOT FOUND THEN
     RAISE EXCEPTION 'Client not found';
   END IF;
 
-  -- Verify authorization
-  -- If client has organization, check if user is manager or owner, or if assigned_to/creator
+  -- 3. Verificação de autorização explícita
   IF v_client_org IS NOT NULL THEN
-    v_user_role := public.get_user_role(v_client_org);
-    IF v_user_role NOT IN ('owner', 'admin', 'manager') AND v_client_owner <> v_user_id THEN
-      -- Also allow if they are the assigned broker
-      IF NOT EXISTS (
-        SELECT 1 FROM public.clients 
-        WHERE id = p_client_id AND assigned_to = v_user_id
-      ) THEN
-        RAISE EXCEPTION 'Access denied';
-      END IF;
+    -- Exige vínculo ativo com a organização à qual o cliente pertence
+    SELECT EXISTS (
+      SELECT 1 FROM public.organization_members
+      WHERE organization_id = v_client_org
+        AND user_id = v_user_id
+        AND status = 'active'
+    ) INTO v_is_active_member;
+
+    IF v_is_active_member IS NOT TRUE THEN
+      RAISE EXCEPTION 'Access denied: not an active member of this organization';
     END IF;
+
+    -- Obtém o cargo ativo do solicitante na organização
+    v_user_role := public.get_user_role(v_client_org);
+
+    -- Autorização explícita:
+    IF (v_user_role IN ('owner', 'admin', 'manager')) = TRUE THEN
+      v_is_authorized := TRUE;
+    ELSIF (v_client_assigned_to = v_user_id) = TRUE THEN
+      v_is_authorized := TRUE;
+    ELSIF (v_client_owner = v_user_id) = TRUE THEN
+      v_is_authorized := TRUE;
+    END IF;
+
+    -- Negação estrita quando autorização IS NOT TRUE
+    IF v_is_authorized IS NOT TRUE THEN
+      RAISE EXCEPTION 'Access denied: insufficient permissions to delete client';
+    END IF;
+
   ELSE
-    IF v_client_owner <> v_user_id THEN
-      RAISE EXCEPTION 'Access denied';
+    -- Caso legado: cliente sem organização associada
+    IF (v_client_owner = v_user_id) = TRUE THEN
+      v_is_authorized := TRUE;
+    END IF;
+
+    IF v_is_authorized IS NOT TRUE THEN
+      RAISE EXCEPTION 'Access denied: only owner can delete legacy client';
     END IF;
   END IF;
 
-  -- Cascade deletes
-  -- 1. Tasks
+  -- 4. Exclusão em cascata protegida na mesma transação atômica
+  UPDATE public.properties
+  SET "ownerId" = NULL
+  WHERE "ownerId" = p_client_id;
+
   DELETE FROM public.tasks WHERE "clientId" = p_client_id;
-
-  -- 2. Visits
   DELETE FROM public.visits WHERE "clientId" = p_client_id;
-
-  -- 3. Proposals
   DELETE FROM public.proposals WHERE "clientId" = p_client_id;
-
-  -- 4. History events
   DELETE FROM public.history_events WHERE "clientId" = p_client_id;
-
-  -- 5. Delete the client itself
   DELETE FROM public.clients WHERE id = p_client_id;
 
-  -- Return success json
   RETURN json_build_object(
     'success', true,
     'deletedId', p_client_id
   );
 END;
 $$;
+
+REVOKE ALL ON FUNCTION public.delete_client_cascade(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.delete_client_cascade(uuid) TO authenticated, service_role;
+
+-- ==============================================================================
+-- 17.5 AUTHENTICATION, ATOMIC ONBOARDING & SECURE INVITATIONS (ETAPA 4)
+-- ==============================================================================
+
+-- RPC ATÔMICA: CRIAÇÃO DE ORGANIZAÇÃO COM PRIMEIRO PROPRIETÁRIO
+DROP FUNCTION IF EXISTS public.create_organization_with_owner(text, text, text, text, text, text, text, text, text, text);
+
+CREATE OR REPLACE FUNCTION public.create_organization_with_owner(
+  p_name text,
+  p_trade_name text DEFAULT NULL,
+  p_document text DEFAULT NULL,
+  p_creci text DEFAULT NULL,
+  p_phone text DEFAULT NULL,
+  p_email text DEFAULT NULL,
+  p_city text DEFAULT NULL,
+  p_state text DEFAULT NULL,
+  p_account_type text DEFAULT 'agency',
+  p_plan text DEFAULT 'beta'
+)
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_user_id uuid;
+  v_user_email text;
+  v_user_name text;
+  v_org_id uuid;
+  v_target_plan text;
+  v_max_members integer;
+  v_org record;
+BEGIN
+  -- 1. Exige autenticação estrita
+  v_user_id := auth.uid();
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  -- 2. Valida nome obrigatório
+  IF p_name IS NULL OR trim(p_name) = '' THEN
+    RAISE EXCEPTION 'Nome da organização é obrigatório';
+  END IF;
+
+  -- 3. Busca dados do perfil do usuário autenticado
+  SELECT email, COALESCE(name, username, '')
+  INTO v_user_email, v_user_name
+  FROM public.profiles
+  WHERE id = v_user_id;
+
+  -- 4. Define plano e quotas permitidas no cadastro
+  v_target_plan := LOWER(COALESCE(p_plan, 'beta'));
+  IF v_target_plan NOT IN ('beta', 'start', 'pro', 'max', 'pro_max') THEN
+    v_target_plan := 'beta';
+  END IF;
+
+  v_max_members := CASE
+    WHEN v_target_plan = 'pro_max' THEN 30
+    WHEN v_target_plan = 'max' THEN 5
+    ELSE 1
+  END;
+
+  -- 5. Criação atômica da organização
+  INSERT INTO public.organizations (
+    name,
+    trade_name,
+    document,
+    creci,
+    phone,
+    email,
+    city,
+    state,
+    owner_id,
+    plan,
+    max_members,
+    subscription_status,
+    subscription_started_at
+  ) VALUES (
+    trim(p_name),
+    COALESCE(trim(p_trade_name), trim(p_name)),
+    NULLIF(trim(p_document), ''),
+    NULLIF(trim(p_creci), ''),
+    NULLIF(trim(p_phone), ''),
+    NULLIF(trim(p_email), ''),
+    NULLIF(trim(p_city), ''),
+    NULLIF(trim(p_state), ''),
+    v_user_id,
+    v_target_plan,
+    v_max_members,
+    'active',
+    timezone('utc'::text, now())
+  )
+  RETURNING * INTO v_org;
+
+  v_org_id := v_org.id;
+
+  -- 6. Associação atômica como primeiro proprietário (idempotente)
+  INSERT INTO public.organization_members (
+    organization_id,
+    user_id,
+    name,
+    email,
+    role,
+    status
+  ) VALUES (
+    v_org_id,
+    v_user_id,
+    COALESCE(v_user_name, 'Proprietário'),
+    COALESCE(v_user_email, ''),
+    'owner',
+    'active'
+  )
+  ON CONFLICT (organization_id, user_id)
+  DO UPDATE SET
+    role = 'owner',
+    status = 'active',
+    updated_at = timezone('utc'::text, now());
+
+  -- 7. Atualização do perfil do usuário com organização padrão e cargo de proprietário
+  UPDATE public.profiles
+  SET default_organization_id = v_org_id,
+      account_type = COALESCE(p_account_type, 'agency'),
+      current_role = 'owner',
+      onboarding_completed = true
+  WHERE id = v_user_id;
+
+  -- 8. Retorno do objeto estruturado
+  RETURN json_build_object(
+    'id', v_org.id,
+    'name', v_org.name,
+    'tradeName', v_org.trade_name,
+    'creci', v_org.creci,
+    'phone', v_org.phone,
+    'email', v_org.email,
+    'city', v_org.city,
+    'state', v_org.state,
+    'ownerId', v_org.owner_id,
+    'plan', v_org.plan,
+    'userRole', 'owner'
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.create_organization_with_owner(text, text, text, text, text, text, text, text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.create_organization_with_owner(text, text, text, text, text, text, text, text, text, text) TO authenticated, service_role;
+
+
+-- RPC ATÔMICA: GERAÇÃO SEGURA DE CONVITE (COM CRIPTOGRAFIA E QUOTA)
+DROP FUNCTION IF EXISTS public.create_organization_invite_v2(uuid, text, text, text);
+
+CREATE OR REPLACE FUNCTION public.create_organization_invite_v2(
+  p_org_id uuid,
+  p_invited_email text,
+  p_invited_name text DEFAULT NULL,
+  p_role text DEFAULT 'broker'
+)
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_user_id uuid;
+  v_caller_role text;
+  v_token text;
+  v_token_hash text;
+  v_target_role text;
+  v_clean_email text;
+  v_current_count integer;
+  v_max_members integer;
+  v_plan text;
+  v_invite_id uuid;
+  v_expires_at timestamp with time zone;
+BEGIN
+  -- 1. Autenticação do chamador
+  v_user_id := auth.uid();
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  -- 2. Verificação de permissão do chamador na organização (owner ou admin)
+  v_caller_role := public.get_user_role(p_org_id);
+  IF v_caller_role NOT IN ('owner', 'admin') THEN
+    RAISE EXCEPTION 'Apenas proprietários e administradores podem convidar membros.';
+  END IF;
+
+  -- 3. Validação de e-mail e cargo
+  v_clean_email := LOWER(TRIM(p_invited_email));
+  IF v_clean_email IS NULL OR v_clean_email = '' OR position('@' in v_clean_email) = 0 THEN
+    RAISE EXCEPTION 'E-mail do convidado inválido.';
+  END IF;
+
+  v_target_role := LOWER(TRIM(COALESCE(p_role, 'broker')));
+  IF v_target_role NOT IN ('admin', 'manager', 'broker') THEN
+    RAISE EXCEPTION 'Cargo inválido para convite. Escolha admin, manager ou broker.';
+  END IF;
+
+  -- Admin não pode convidar com cargo superior ou igual sem ser owner
+  IF v_caller_role = 'admin' AND v_target_role IN ('admin', 'owner') THEN
+    RAISE EXCEPTION 'Apenas o proprietário pode convidar novos administradores.';
+  END IF;
+
+  -- 4. Verificação de membro ativo já existente com esse e-mail na organização
+  IF EXISTS (
+    SELECT 1 FROM public.organization_members
+    WHERE organization_id = p_org_id
+      AND LOWER(email) = v_clean_email
+      AND status = 'active'
+  ) THEN
+    RAISE EXCEPTION 'Este usuário já é um membro ativo desta imobiliária.';
+  END IF;
+
+  -- 5. Verificação da cota de membros no banco de dados com bloqueio de concorrência
+  SELECT plan, max_members
+  INTO v_plan, v_max_members
+  FROM public.organizations
+  WHERE id = p_org_id
+  FOR SHARE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Organização não encontrada.';
+  END IF;
+
+  -- Planos beta, start e pro não suportam convite de equipe
+  IF v_plan IN ('beta', 'start', 'pro') THEN
+    RAISE EXCEPTION 'Gestão de equipe está disponível apenas nos planos Max e PRO MAX.';
+  END IF;
+
+  -- Contagem de membros ativos
+  SELECT count(*)
+  INTO v_current_count
+  FROM public.organization_members
+  WHERE organization_id = p_org_id
+    AND status = 'active';
+
+  IF v_current_count >= COALESCE(v_max_members, 1) THEN
+    RAISE EXCEPTION 'Limite de membros ativos atingido (% de %). Faça upgrade para adicionar mais colaboradores.', v_current_count, v_max_members;
+  END IF;
+
+  -- 6. Geração criptograficamente segura de token (32 bytes hex)
+  v_token := encode(gen_random_bytes(32), 'hex');
+  v_token_hash := encode(digest(v_token, 'sha256'), 'hex');
+  v_expires_at := timezone('utc'::text, now()) + interval '7 days';
+
+  -- 7. Cancelar convites pendentes anteriores para o mesmo e-mail nesta organização
+  UPDATE public.organization_invites
+  SET status = 'cancelled'
+  WHERE organization_id = p_org_id
+    AND LOWER(invited_email) = v_clean_email
+    AND status = 'pending';
+
+  -- 8. Inserir novo convite seguro
+  INSERT INTO public.organization_invites (
+    organization_id,
+    invited_email,
+    invited_name,
+    role,
+    token,
+    token_hash,
+    status,
+    invited_by,
+    expires_at,
+    created_at
+  ) VALUES (
+    p_org_id,
+    v_clean_email,
+    NULLIF(TRIM(p_invited_name), ''),
+    v_target_role,
+    v_token,
+    v_token_hash,
+    'pending',
+    v_user_id,
+    v_expires_at,
+    timezone('utc'::text, now())
+  )
+  RETURNING id INTO v_invite_id;
+
+  -- 9. Retorna dados do convite incluindo token para envio direto pelo criador
+  RETURN json_build_object(
+    'id', v_invite_id,
+    'organizationId', p_org_id,
+    'invitedEmail', v_clean_email,
+    'invitedName', p_invited_name,
+    'role', v_target_role,
+    'token', v_token,
+    'status', 'pending',
+    'expiresAt', v_expires_at
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.create_organization_invite_v2(uuid, text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.create_organization_invite_v2(uuid, text, text, text) TO authenticated, service_role;
+
+
+-- RPC ATÔMICA, IDEMPOTENTE E RESILIENTE: ACEITE SEGURO DE CONVITE
+DROP FUNCTION IF EXISTS public.accept_organization_invite(text);
+
+CREATE OR REPLACE FUNCTION public.accept_organization_invite(p_token text)
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_user_id uuid;
+  v_user_email text;
+  v_user_name text;
+  v_invite record;
+  v_member_id uuid;
+  v_current_count integer;
+  v_max_members integer;
+  v_input_hash text;
+BEGIN
+  -- 1. Exige autenticação estrita
+  v_user_id := auth.uid();
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  -- 2. Validação básica do token
+  IF p_token IS NULL OR trim(p_token) = '' THEN
+    RAISE EXCEPTION 'Token de convite é obrigatório';
+  END IF;
+
+  v_input_hash := encode(digest(trim(p_token), 'sha256'), 'hex');
+
+  -- 3. Busca e bloqueia o convite (FOR UPDATE) comparando por hash ou por token direto (retrocompatibilidade)
+  SELECT *
+  INTO v_invite
+  FROM public.organization_invites
+  WHERE (token_hash = v_input_hash OR token = trim(p_token))
+    AND status IN ('pending', 'accepted')
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Convite inválido, cancelado ou não encontrado.';
+  END IF;
+
+  -- 4. Idempotência e replay protection:
+  -- Se o convite já foi aceito pelo próprio usuário autenticado, retorna sucesso sem duplicar
+  IF v_invite.status = 'accepted' THEN
+    IF v_invite.accepted_by = v_user_id THEN
+      RETURN json_build_object(
+        'success', true,
+        'message', 'Convite já aceito anteriormente por esta conta.',
+        'organizationId', v_invite.organization_id,
+        'role', v_invite.role
+      );
+    ELSE
+      RAISE EXCEPTION 'Este convite já foi utilizado por outro usuário.';
+    END IF;
+  END IF;
+
+  -- 5. Validação de expiração temporal
+  IF v_invite.expires_at IS NOT NULL AND v_invite.expires_at < timezone('utc'::text, now()) THEN
+    UPDATE public.organization_invites
+    SET status = 'expired'
+    WHERE id = v_invite.id;
+    RAISE EXCEPTION 'Este convite expirou.';
+  END IF;
+
+  -- 6. Obtém o e-mail e nome confirmados do usuário autenticado
+  SELECT email, COALESCE(name, username, '')
+  INTO v_user_email, v_user_name
+  FROM public.profiles
+  WHERE id = v_user_id;
+
+  -- Se perfil ainda não possui email preenchido, busca diretamente de auth.users
+  IF v_user_email IS NULL OR v_user_email = '' THEN
+    SELECT email INTO v_user_email
+    FROM auth.users
+    WHERE id = v_user_id;
+  END IF;
+
+  -- 7. Validação estrita do destinatário do convite
+  IF LOWER(TRIM(v_user_email)) <> LOWER(TRIM(v_invite.invited_email)) THEN
+    RAISE EXCEPTION 'Este convite foi enviado para "%", mas você está autenticado como "%". Faça login com o e-mail correto.', v_invite.invited_email, v_user_email;
+  END IF;
+
+  -- 8. Verificação transacional de limite de membros da organização
+  SELECT max_members
+  INTO v_max_members
+  FROM public.organizations
+  WHERE id = v_invite.organization_id
+  FOR SHARE;
+
+  SELECT count(*)
+  INTO v_current_count
+  FROM public.organization_members
+  WHERE organization_id = v_invite.organization_id
+    AND status = 'active'
+    AND user_id <> v_user_id;
+
+  IF v_max_members IS NOT NULL AND v_current_count >= v_max_members THEN
+    RAISE EXCEPTION 'A organização atingiu a cota máxima de membros ativos. Contate o administrador.';
+  END IF;
+
+  -- 9. Inserção / reativação atômica em organization_members
+  INSERT INTO public.organization_members (
+    organization_id,
+    user_id,
+    name,
+    email,
+    role,
+    status
+  ) VALUES (
+    v_invite.organization_id,
+    v_user_id,
+    COALESCE(NULLIF(v_user_name, ''), v_invite.invited_name, 'Colaborador'),
+    v_user_email,
+    v_invite.role,
+    'active'
+  )
+  ON CONFLICT (organization_id, user_id)
+  DO UPDATE SET
+    role = v_invite.role,
+    status = 'active',
+    name = COALESCE(NULLIF(public.organization_members.name, ''), v_invite.invited_name, 'Colaborador'),
+    email = v_user_email,
+    updated_at = timezone('utc'::text, now())
+  RETURNING id INTO v_member_id;
+
+  -- 10. Consumo atômico do convite
+  UPDATE public.organization_invites
+  SET status = 'accepted',
+      accepted_by = v_user_id,
+      accepted_at = timezone('utc'::text, now())
+  WHERE id = v_invite.id;
+
+  -- 11. Atualização do perfil do usuário com a organização e cargo ativos
+  UPDATE public.profiles
+  SET default_organization_id = v_invite.organization_id,
+      current_role = v_invite.role,
+      onboarding_completed = true
+  WHERE id = v_user_id;
+
+  -- 12. Retorno com dados confirmados
+  RETURN json_build_object(
+    'success', true,
+    'memberId', v_member_id,
+    'organizationId', v_invite.organization_id,
+    'role', v_invite.role
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.accept_organization_invite(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.accept_organization_invite(text) TO authenticated, service_role;
+
+-- ==========================================
+-- 18. TENANT RECORD IMMUTABILITY & INTEGRITY TRIGGERS
+-- ==========================================
+
+CREATE OR REPLACE FUNCTION public.enforce_tenant_record_immutability()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF OLD.organization_id IS NOT NULL AND NEW.organization_id IS DISTINCT FROM OLD.organization_id THEN
+    RAISE EXCEPTION 'organization_id é imutável: movimentação direta de registro entre organizações é proibida';
+  END IF;
+
+  IF OLD.organization_id IS NOT NULL AND NEW.organization_id IS NULL THEN
+    RAISE EXCEPTION 'Não é permitido desvincular um registro de sua organização';
+  END IF;
+
+  IF OLD."userId" IS NOT NULL AND NEW."userId" IS DISTINCT FROM OLD."userId" THEN
+    RAISE EXCEPTION 'O criador original do registro (userId) é imutável e não pode ser alterado via CRUD';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.enforce_tenant_record_immutability() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS trg_immutability_clients ON public.clients;
+CREATE TRIGGER trg_immutability_clients
+BEFORE UPDATE ON public.clients
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_properties ON public.properties;
+CREATE TRIGGER trg_immutability_properties
+BEFORE UPDATE ON public.properties
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_tasks ON public.tasks;
+CREATE TRIGGER trg_immutability_tasks
+BEFORE UPDATE ON public.tasks
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_visits ON public.visits;
+CREATE TRIGGER trg_immutability_visits
+BEFORE UPDATE ON public.visits
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_proposals ON public.proposals;
+CREATE TRIGGER trg_immutability_proposals
+BEFORE UPDATE ON public.proposals
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_transactions ON public.transactions;
+CREATE TRIGGER trg_immutability_transactions
+BEFORE UPDATE ON public.transactions
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_settings ON public.settings;
+CREATE TRIGGER trg_immutability_settings
+BEFORE UPDATE ON public.settings
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_history_events ON public.history_events;
+CREATE TRIGGER trg_immutability_history_events
+BEFORE UPDATE ON public.history_events
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+-- CROSS-TENANT REFERENTIAL INTEGRITY TRIGGER
+CREATE OR REPLACE FUNCTION public.check_cross_tenant_integrity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_ref_org_id uuid;
+  v_is_active_member boolean;
+BEGIN
+  IF NEW.organization_id IS NOT NULL THEN
+    IF NEW.assigned_to IS NOT NULL THEN
+      SELECT EXISTS (
+        SELECT 1 FROM public.organization_members
+        WHERE organization_id = NEW.organization_id
+          AND user_id = NEW.assigned_to
+          AND status = 'active'
+      ) INTO v_is_active_member;
+
+      IF v_is_active_member IS NOT TRUE THEN
+        RAISE EXCEPTION 'Violação de tenant: o usuário responsável (assigned_to) não é membro ativo desta organização';
+      END IF;
+    END IF;
+
+    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals', 'history_events') THEN
+      IF NEW."clientId" IS NOT NULL THEN
+        SELECT organization_id INTO v_ref_org_id
+        FROM public.clients
+        WHERE id = NEW."clientId";
+
+        IF v_ref_org_id IS NULL OR v_ref_org_id <> NEW.organization_id THEN
+          RAISE EXCEPTION 'Violação de tenant: o cliente relacionado não pertence a esta organização';
+        END IF;
+      END IF;
+    END IF;
+
+    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals') THEN
+      IF NEW."propertyId" IS NOT NULL THEN
+        SELECT organization_id INTO v_ref_org_id
+        FROM public.properties
+        WHERE id = NEW."propertyId";
+
+        IF v_ref_org_id IS NULL OR v_ref_org_id <> NEW.organization_id THEN
+          RAISE EXCEPTION 'Violação de tenant: o imóvel relacionado não pertence a esta organização';
+        END IF;
+      END IF;
+    END IF;
+
+    IF TG_TABLE_NAME = 'properties' AND NEW."ownerId" IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id
+      FROM public.clients
+      WHERE id = NEW."ownerId";
+
+      IF v_ref_org_id IS NULL OR v_ref_org_id <> NEW.organization_id THEN
+        RAISE EXCEPTION 'Violação de tenant: o cliente proprietário do imóvel não pertence a esta organização';
+      END IF;
+    END IF;
+
+  ELSE
+    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals', 'history_events') AND NEW."clientId" IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id
+      FROM public.clients
+      WHERE id = NEW."clientId";
+
+      IF v_ref_org_id IS NOT NULL THEN
+        RAISE EXCEPTION 'Violação de integridade: registro legado não pode referenciar cliente de uma organização';
+      END IF;
+    END IF;
+
+    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals') AND NEW."propertyId" IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id
+      FROM public.properties
+      WHERE id = NEW."propertyId";
+
+      IF v_ref_org_id IS NOT NULL THEN
+        RAISE EXCEPTION 'Violação de integridade: registro legado não pode referenciar imóvel de uma organização';
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.check_cross_tenant_integrity() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS trg_tenant_integrity_clients ON public.clients;
+CREATE TRIGGER trg_tenant_integrity_clients
+BEFORE INSERT OR UPDATE ON public.clients
+FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+
+DROP TRIGGER IF EXISTS trg_tenant_integrity_properties ON public.properties;
+CREATE TRIGGER trg_tenant_integrity_properties
+BEFORE INSERT OR UPDATE ON public.properties
+FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+
+DROP TRIGGER IF EXISTS trg_tenant_integrity_tasks ON public.tasks;
+CREATE TRIGGER trg_tenant_integrity_tasks
+BEFORE INSERT OR UPDATE ON public.tasks
+FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+
+DROP TRIGGER IF EXISTS trg_tenant_integrity_visits ON public.visits;
+CREATE TRIGGER trg_tenant_integrity_visits
+BEFORE INSERT OR UPDATE ON public.visits
+FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+
+DROP TRIGGER IF EXISTS trg_tenant_integrity_proposals ON public.proposals;
+CREATE TRIGGER trg_tenant_integrity_proposals
+BEFORE INSERT OR UPDATE ON public.proposals
+FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+
+DROP TRIGGER IF EXISTS trg_tenant_integrity_transactions ON public.transactions;
+CREATE TRIGGER trg_tenant_integrity_transactions
+BEFORE INSERT OR UPDATE ON public.transactions
+FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+
+DROP TRIGGER IF EXISTS trg_tenant_integrity_history_events ON public.history_events;
+CREATE TRIGGER trg_tenant_integrity_history_events
+BEFORE INSERT OR UPDATE ON public.history_events
+FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+
+-- TRANSACTIONAL LEAD/CLIENT ASSIGNMENT TRANSFER RPC
+CREATE OR REPLACE FUNCTION public.transfer_client_assignment(
+  p_client_ids uuid[],
+  p_target_broker_id uuid,
+  p_organization_id uuid
+)
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_org_plan text;
+  v_target_name text;
+  v_target_email text;
+  v_client_id uuid;
+  v_client_org uuid;
+  v_client_history jsonb;
+  v_new_history_entry jsonb;
+  v_actor_name text;
+  v_transferred_count integer := 0;
+BEGIN
+  IF v_actor_id IS NULL THEN
+    RAISE EXCEPTION 'Não autenticado';
+  END IF;
+
+  IF p_client_ids IS NULL OR array_length(p_client_ids, 1) = 0 THEN
+    RAISE EXCEPTION 'Nenhum cliente informado para transferência';
+  END IF;
+
+  IF p_target_broker_id IS NULL OR p_organization_id IS NULL THEN
+    RAISE EXCEPTION 'Organização e corretor de destino são obrigatórios';
+  END IF;
+
+  v_actor_role := public.get_user_role(p_organization_id);
+  IF v_actor_role IS NULL OR v_actor_role NOT IN ('owner', 'admin', 'manager') THEN
+    RAISE EXCEPTION 'Acesso negado: apenas proprietários, administradores ou gestores ativos podem transferir clientes';
+  END IF;
+
+  SELECT plan INTO v_org_plan
+  FROM public.organizations
+  WHERE id = p_organization_id;
+
+  IF v_org_plan IS NULL OR v_org_plan NOT IN ('max', 'pro_max') THEN
+    RAISE EXCEPTION 'Transferência de leads está disponível apenas nos planos Max e PRO MAX';
+  END IF;
+
+  SELECT name, email
+  INTO v_target_name, v_target_email
+  FROM public.organization_members
+  WHERE organization_id = p_organization_id
+    AND user_id = p_target_broker_id
+    AND status = 'active';
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'O corretor destinatário não é um membro ativo desta organização';
+  END IF;
+
+  SELECT COALESCE(name, username, 'Administrador')
+  INTO v_actor_name
+  FROM public.profiles
+  WHERE id = v_actor_id;
+
+  FOREACH v_client_id IN ARRAY p_client_ids
+  LOOP
+    SELECT organization_id, history
+    INTO v_client_org, v_client_history
+    FROM public.clients
+    WHERE id = v_client_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Cliente % não encontrado', v_client_id;
+    END IF;
+
+    IF v_client_org IS NULL OR v_client_org <> p_organization_id THEN
+      RAISE EXCEPTION 'Cliente % não pertence à organização informada', v_client_id;
+    END IF;
+
+    v_new_history_entry := jsonb_build_object(
+      'id', substr(md5(random()::text), 1, 9),
+      'type', 'transfer',
+      'date', timezone('utc'::text, now())::text,
+      'description', 'Lead transferido para o corretor responsável ' || COALESCE(v_target_name, v_target_email),
+      'userName', COALESCE(v_actor_name, 'Administrador')
+    );
+
+    UPDATE public.clients
+    SET assigned_to = p_target_broker_id,
+        history = COALESCE(v_client_history, '[]'::jsonb) || jsonb_build_array(v_new_history_entry),
+        updated_at = timezone('utc'::text, now())
+    WHERE id = v_client_id;
+
+    INSERT INTO public.history_events (
+      "userId",
+      "clientId",
+      "type",
+      "date",
+      "description",
+      "userName",
+      "organization_id",
+      "assigned_to"
+    )
+    VALUES (
+      v_actor_id,
+      v_client_id,
+      'transfer',
+      timezone('utc'::text, now())::text,
+      'Lead transferido para o corretor ' || COALESCE(v_target_name, v_target_email),
+      COALESCE(v_actor_name, 'Administrador'),
+      p_organization_id,
+      p_target_broker_id
+    );
+
+    v_transferred_count := v_transferred_count + 1;
+  END LOOP;
+
+  RETURN json_build_object(
+    'success', true,
+    'transferredCount', v_transferred_count,
+    'targetBrokerId', p_target_broker_id
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.transfer_client_assignment(uuid[], uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.transfer_client_assignment(uuid[], uuid, uuid) TO authenticated, service_role;
 
 -- Plan Limits and Usage Security Helper Functions
 DROP FUNCTION IF EXISTS public.get_organization_usage(uuid);
@@ -1339,6 +2620,399 @@ BEGIN
   );
 END;
 $$;
+
+-- ==========================================
+-- 20. TENANT IMMUTABILITY & CROSS-REFERENCE INTEGRITY (ETAPA 2)
+-- ==========================================
+
+-- Trigger to prevent mutating organization_id and original creator (userId)
+CREATE OR REPLACE FUNCTION public.enforce_tenant_record_immutability()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF OLD.organization_id IS NOT NULL AND NEW.organization_id IS DISTINCT FROM OLD.organization_id THEN
+    RAISE EXCEPTION 'organization_id é imutável: movimentação direta de registro entre organizações é proibida';
+  END IF;
+
+  IF OLD.organization_id IS NOT NULL AND NEW.organization_id IS NULL THEN
+    RAISE EXCEPTION 'Não é permitido desvincular um registro de sua organização';
+  END IF;
+
+  IF OLD."userId" IS NOT NULL AND NEW."userId" IS DISTINCT FROM OLD."userId" THEN
+    RAISE EXCEPTION 'O criador original do registro (userId) é imutável e não pode ser alterado via CRUD';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.enforce_tenant_record_immutability() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS trg_immutability_clients ON public.clients;
+CREATE TRIGGER trg_immutability_clients
+BEFORE UPDATE ON public.clients
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_properties ON public.properties;
+CREATE TRIGGER trg_immutability_properties
+BEFORE UPDATE ON public.properties
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_tasks ON public.tasks;
+CREATE TRIGGER trg_immutability_tasks
+BEFORE UPDATE ON public.tasks
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_visits ON public.visits;
+CREATE TRIGGER trg_immutability_visits
+BEFORE UPDATE ON public.visits
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_proposals ON public.proposals;
+CREATE TRIGGER trg_immutability_proposals
+BEFORE UPDATE ON public.proposals
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_transactions ON public.transactions;
+CREATE TRIGGER trg_immutability_transactions
+BEFORE UPDATE ON public.transactions
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_settings ON public.settings;
+CREATE TRIGGER trg_immutability_settings
+BEFORE UPDATE ON public.settings
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+DROP TRIGGER IF EXISTS trg_immutability_history_events ON public.history_events;
+CREATE TRIGGER trg_immutability_history_events
+BEFORE UPDATE ON public.history_events
+FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
+
+-- Trigger to validate cross-tenant integrity on related records
+CREATE OR REPLACE FUNCTION public.validate_tenant_cross_references()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_ref_org uuid;
+  v_member_active boolean;
+BEGIN
+  IF NEW.organization_id IS NOT NULL THEN
+    -- 1. Validate assigned_to belongs to same tenant and is active
+    IF NEW.assigned_to IS NOT NULL THEN
+      SELECT EXISTS (
+        SELECT 1 FROM public.organization_members
+        WHERE organization_id = NEW.organization_id
+          AND user_id = NEW.assigned_to
+          AND status = 'active'
+      ) INTO v_member_active;
+
+      IF NOT v_member_active THEN
+        RAISE EXCEPTION 'Membro responsável (assigned_to) não pertence ativamente a esta organização';
+      END IF;
+    END IF;
+
+    -- 2. Validate client belongs to same organization
+    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals', 'transactions', 'history_events') THEN
+      IF (TG_OP = 'INSERT' OR TG_OP = 'UPDATE') THEN
+        IF NEW."clientId" IS NOT NULL THEN
+          SELECT organization_id INTO v_ref_org FROM public.clients WHERE id = NEW."clientId";
+          IF v_ref_org IS NOT NULL AND v_ref_org <> NEW.organization_id THEN
+            RAISE EXCEPTION 'Inconsistência de tenant: o cliente referenciado pertence a outra organização';
+          END IF;
+        END IF;
+
+        IF NEW."propertyId" IS NOT NULL THEN
+          SELECT organization_id INTO v_ref_org FROM public.properties WHERE id = NEW."propertyId";
+          IF v_ref_org IS NOT NULL AND v_ref_org <> NEW.organization_id THEN
+            RAISE EXCEPTION 'Inconsistência de tenant: o imóvel referenciado pertence a outra organização';
+          END IF;
+        END IF;
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.validate_tenant_cross_references() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS trg_cross_ref_tasks ON public.tasks;
+CREATE TRIGGER trg_cross_ref_tasks
+BEFORE INSERT OR UPDATE ON public.tasks
+FOR EACH ROW EXECUTE FUNCTION public.validate_tenant_cross_references();
+
+DROP TRIGGER IF EXISTS trg_cross_ref_visits ON public.visits;
+CREATE TRIGGER trg_cross_ref_visits
+BEFORE INSERT OR UPDATE ON public.visits
+FOR EACH ROW EXECUTE FUNCTION public.validate_tenant_cross_references();
+
+DROP TRIGGER IF EXISTS trg_cross_ref_proposals ON public.proposals;
+CREATE TRIGGER trg_cross_ref_proposals
+BEFORE INSERT OR UPDATE ON public.proposals
+FOR EACH ROW EXECUTE FUNCTION public.validate_tenant_cross_references();
+
+DROP TRIGGER IF EXISTS trg_cross_ref_transactions ON public.transactions;
+CREATE TRIGGER trg_cross_ref_transactions
+BEFORE INSERT OR UPDATE ON public.transactions
+FOR EACH ROW EXECUTE FUNCTION public.validate_tenant_cross_references();
+
+DROP TRIGGER IF EXISTS trg_cross_ref_history_events ON public.history_events;
+CREATE TRIGGER trg_cross_ref_history_events
+BEFORE INSERT OR UPDATE ON public.history_events
+FOR EACH ROW EXECUTE FUNCTION public.validate_tenant_cross_references();
+
+-- Transacional RPC for client/lead assignment transfer
+DROP FUNCTION IF EXISTS public.transfer_client_assignment(uuid[], uuid, uuid);
+CREATE OR REPLACE FUNCTION public.transfer_client_assignment(
+  p_client_ids uuid[],
+  p_target_broker_id uuid,
+  p_organization_id uuid
+)
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_caller_role text;
+  v_target_role text;
+  v_org_plan text;
+  v_client_rec record;
+  v_transferred_count int := 0;
+  v_broker_name text;
+  v_caller_name text;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Não autenticado';
+  END IF;
+
+  SELECT plan INTO v_org_plan FROM public.organizations WHERE id = p_organization_id;
+  IF v_org_plan IS NULL THEN
+    RAISE EXCEPTION 'Organização não encontrada';
+  END IF;
+
+  IF v_org_plan NOT IN ('max', 'pro_max') THEN
+    RAISE EXCEPTION 'Transferência de leads está disponível apenas nos planos Max e PRO MAX';
+  END IF;
+
+  SELECT role INTO v_caller_role FROM public.organization_members
+  WHERE organization_id = p_organization_id AND user_id = auth.uid() AND status = 'active';
+
+  IF v_caller_role IS NULL OR v_caller_role NOT IN ('owner', 'admin', 'manager') THEN
+    RAISE EXCEPTION 'Permissão negada: apenas proprietários, administradores ou gestores ativos podem transferir clientes';
+  END IF;
+
+  SELECT role, COALESCE(name, 'Corretor') INTO v_target_role, v_broker_name
+  FROM public.organization_members
+  WHERE organization_id = p_organization_id AND user_id = p_target_broker_id AND status = 'active';
+
+  IF v_target_role IS NULL THEN
+    RAISE EXCEPTION 'O corretor destinatário não é membro ativo desta organização';
+  END IF;
+
+  SELECT COALESCE(name, email) INTO v_caller_name
+  FROM public.organization_members
+  WHERE organization_id = p_organization_id AND user_id = auth.uid();
+
+  -- Pre-flight validation: all client_ids must belong to p_organization_id
+  FOR v_client_rec IN
+    SELECT id, organization_id, history FROM public.clients WHERE id = ANY(p_client_ids)
+  LOOP
+    IF v_client_rec.organization_id IS DISTINCT FROM p_organization_id THEN
+      RAISE EXCEPTION 'Violação de tenant: o cliente % não pertence a esta organização', v_client_rec.id;
+    END IF;
+  END LOOP;
+
+  -- Ensure exact count match (no missing IDs)
+  IF (SELECT count(*) FROM public.clients WHERE id = ANY(p_client_ids) AND organization_id = p_organization_id) <> array_length(p_client_ids, 1) THEN
+    RAISE EXCEPTION 'Um ou mais clientes não foram encontrados para transferência nesta organização';
+  END IF;
+
+  -- Atomic update
+  FOR v_client_rec IN
+    SELECT id, history FROM public.clients WHERE id = ANY(p_client_ids) FOR UPDATE
+  LOOP
+    UPDATE public.clients
+    SET
+      assigned_to = p_target_broker_id,
+      history = COALESCE(history, '[]'::jsonb) || jsonb_build_array(
+        jsonb_build_object(
+          'id', substr(md5(random()::text), 1, 9),
+          'type', 'transfer',
+          'date', timezone('utc'::text, now())::text,
+          'description', 'Lead transferido para o corretor responsável ' || v_broker_name || '.',
+          'userName', COALESCE(v_caller_name, 'Gestor')
+        )
+      ),
+      updated_at = timezone('utc'::text, now())
+    WHERE id = v_client_rec.id;
+
+    v_transferred_count := v_transferred_count + 1;
+  END LOOP;
+
+  RETURN json_build_object(
+    'success', true,
+    'transferredCount', v_transferred_count
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.transfer_client_assignment(uuid[], uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.transfer_client_assignment(uuid[], uuid, uuid) TO authenticated, service_role;
+
+-- ==============================================================================
+-- 18. COMMERCIAL SETTINGS, AUTHORITY PROTECTION & APPEND-ONLY HISTORY (ETAPA 5)
+-- ==============================================================================
+
+-- Trigger to protect authority fields in profiles
+CREATE OR REPLACE FUNCTION public.protect_profile_authority_fields()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF auth.uid() IS NOT NULL AND auth.role() = 'authenticated' THEN
+    NEW.id := OLD.id;
+    IF NEW.email IS DISTINCT FROM OLD.email AND NEW.email IS NOT NULL THEN
+      SELECT email INTO NEW.email FROM auth.users WHERE id = OLD.id;
+    END IF;
+    IF NEW.current_role IS DISTINCT FROM OLD.current_role THEN
+      NEW.current_role := OLD.current_role;
+    END IF;
+    IF NEW.role IS DISTINCT FROM OLD.role THEN
+      NEW.role := OLD.role;
+    END IF;
+    IF NEW.default_organization_id IS DISTINCT FROM OLD.default_organization_id AND NEW.default_organization_id IS NOT NULL THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM public.organization_members
+        WHERE organization_id = NEW.default_organization_id
+          AND user_id = OLD.id
+          AND status = 'active'
+      ) THEN
+        NEW.default_organization_id := OLD.default_organization_id;
+      END IF;
+    END IF;
+  END IF;
+
+  NEW."updatedAt" := timezone('utc'::text, now());
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_protect_profile_authority ON public.profiles;
+CREATE TRIGGER trg_protect_profile_authority
+BEFORE UPDATE ON public.profiles
+FOR EACH ROW
+EXECUTE FUNCTION public.protect_profile_authority_fields();
+
+-- RPC append-only history event
+CREATE OR REPLACE FUNCTION public.append_client_history_event(
+  p_client_id uuid,
+  p_type text,
+  p_description text,
+  p_user_name text DEFAULT NULL
+)
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_user_id uuid := auth.uid();
+  v_client_rec record;
+  v_actor_name text;
+  v_new_event jsonb;
+  v_now_iso text := timezone('utc'::text, now())::text;
+  v_event_id text := substr(md5(random()::text), 1, 9);
+BEGIN
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Não autorizado: usuário não autenticado';
+  END IF;
+
+  SELECT id, "userId", organization_id, assigned_to, history
+  INTO v_client_rec
+  FROM public.clients
+  WHERE id = p_client_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Cliente não encontrado';
+  END IF;
+
+  IF v_client_rec.organization_id IS NOT NULL THEN
+    IF NOT public.is_org_member(v_client_rec.organization_id) THEN
+      RAISE EXCEPTION 'Acesso negado: vínculo inativo ou ausente na organização';
+    END IF;
+    IF NOT public.is_org_manager_or_higher(v_client_rec.organization_id)
+       AND v_client_rec.assigned_to != v_user_id
+       AND v_client_rec."userId" != v_user_id THEN
+      RAISE EXCEPTION 'Apenas o corretor responsável ou gestores podem registrar eventos neste lead';
+    END IF;
+  ELSE
+    IF v_client_rec."userId" != v_user_id THEN
+      RAISE EXCEPTION 'Acesso negado ao cliente legado';
+    END IF;
+  END IF;
+
+  IF p_user_name IS NOT NULL AND length(trim(p_user_name)) > 0 THEN
+    v_actor_name := trim(p_user_name);
+  ELSE
+    SELECT COALESCE(name, username, 'Corretor')
+    INTO v_actor_name
+    FROM public.profiles
+    WHERE id = v_user_id;
+  END IF;
+
+  v_new_event := jsonb_build_object(
+    'id', v_event_id,
+    'type', COALESCE(p_type, 'note'),
+    'date', v_now_iso,
+    'description', p_description,
+    'userName', COALESCE(v_actor_name, 'Corretor')
+  );
+
+  INSERT INTO public.history_events (
+    id, "userId", "clientId", type, date, description, "userName",
+    "createdAt", organization_id, assigned_to
+  ) VALUES (
+    gen_random_uuid(),
+    v_user_id,
+    p_client_id,
+    COALESCE(p_type, 'note'),
+    v_now_iso,
+    p_description,
+    COALESCE(v_actor_name, 'Corretor'),
+    now(),
+    v_client_rec.organization_id,
+    v_client_rec.assigned_to
+  );
+
+  UPDATE public.clients
+  SET
+    history = COALESCE(history, '[]'::jsonb) || jsonb_build_array(v_new_event),
+    updated_at = now()
+  WHERE id = p_client_id;
+
+  RETURN json_build_object(
+    'success', true,
+    'event', v_new_event
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.append_client_history_event(uuid, text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.append_client_history_event(uuid, text, text, text) TO authenticated, service_role;
 
 -- Grant permissions for authenticated and service_role to execute the RPC functions
 GRANT EXECUTE ON FUNCTION public.delete_client_cascade(uuid) TO authenticated, service_role;

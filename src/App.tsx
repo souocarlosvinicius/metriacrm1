@@ -6,31 +6,36 @@ import DashboardView from "./components/DashboardView";
 import PropertiesView from "./components/PropertiesView";
 import ClientsView from "./components/ClientsView";
 import TasksView from "./components/TasksView";
-import PipelineView from "./components/PipelineView";
-import TransactionsView from "./components/TransactionsView";
-import SettingsView from "./components/SettingsView";
-import InfoView from "./components/InfoView";
-import TeamView from "./components/TeamView";
 import PropertyModal from "./components/PropertyModal";
 import ClientModal from "./components/ClientModal";
 import LoginView from "./components/LoginView";
-import UserProfileModal from "./components/UserProfileModal";
-import OnboardingModal from "./components/OnboardingModal";
-import LandingPage from "./components/LandingPage";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { setupGlobalErrorMonitoring, logError } from "./utils/logger";
 import { apiFetch } from "./api";
 import { useCurrentPlan } from "./hooks/useCurrentPlan";
+import { getLocalDateString } from "./utils/dateUtils";
 import * as Sentry from "@sentry/react";
+
+// Code splitting / Lazy loading de módulos pesados para otimização de bundle em produção
+const PipelineView = React.lazy(() => import("./components/PipelineView"));
+const TransactionsView = React.lazy(() => import("./components/TransactionsView"));
+const SettingsView = React.lazy(() => import("./components/SettingsView"));
+const InfoView = React.lazy(() => import("./components/InfoView"));
+const TeamView = React.lazy(() => import("./components/TeamView"));
+const UserProfileModal = React.lazy(() => import("./components/UserProfileModal"));
+const OnboardingModal = React.lazy(() => import("./components/OnboardingModal"));
+const LandingPage = React.lazy(() => import("./components/LandingPage"));
 
 // Initialize Sentry SDK for real-time frontend exception monitoring
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN || "";
+export const isSentryEnabled = Boolean(SENTRY_DSN && SENTRY_DSN.trim().length > 0 && SENTRY_DSN.startsWith("http"));
 
-if (typeof window !== "undefined") {
+if (typeof window !== "undefined" && isSentryEnabled) {
   Sentry.init({
-    dsn: SENTRY_DSN || undefined,
+    dsn: SENTRY_DSN,
     environment: import.meta.env.MODE || "production",
-    tracesSampleRate: 1.0,
+    // Tracing sample rate conservador (0.1) se implementado
+    tracesSampleRate: 0.1,
     beforeSend(event, hint) {
       // Filter out harmless local development / websocket connection noise
       const error = hint?.originalException;
@@ -91,22 +96,23 @@ export function App() {
     const cleanupLogger = setupGlobalErrorMonitoring();
 
     // Sentry runtime tagging for real-time dashboard categorization
-    Sentry.setTag("crm_app", "metria_crm");
-    Sentry.setTag("environment", import.meta.env.MODE || "production");
+    if (isSentryEnabled) {
+      Sentry.setTag("crm_app", "metria_crm");
+      Sentry.setTag("environment", import.meta.env.MODE || "production");
+    }
 
     return () => {
       cleanupLogger();
     };
   }, []);
 
-  // Sync current user session with Sentry for incident triage
+  // Sync current user session with Sentry for incident triage (minimizado para ID pseudônimo)
   useEffect(() => {
+    if (!isSentryEnabled) return;
     if (currentUser) {
+      // Minimiza setUser para proteção de privacidade (LGPD): nunca expõe email ou nome pessoal no monitoramento
       Sentry.setUser({
         id: currentUser.id,
-        email: currentUser.email,
-        username: currentUser.name || currentUser.username,
-        role: currentUser.role,
       });
     } else {
       Sentry.setUser(null);
@@ -278,7 +284,7 @@ export function App() {
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
-  const [selectedTaskDate, setSelectedTaskDate] = useState<string>(() => new Date().toISOString().split("T")[0]);
+  const [selectedTaskDate, setSelectedTaskDate] = useState<string>(() => getLocalDateString());
   const [prefilledClientForTask, setPrefilledClientForTask] = useState<Client | null>(null);
 
   // Global Keyboard Shortcuts Listener
@@ -417,7 +423,7 @@ export function App() {
   // Simple Notification System
   const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
   const todayTasks = React.useMemo(() => {
-    const todayStr = new Date().toISOString().split("T")[0];
+    const todayStr = getLocalDateString();
     return tasks.filter(t => t.date === todayStr && !t.completed);
   }, [tasks]);
 
@@ -960,13 +966,19 @@ export function App() {
   if (!currentUser) {
     if (!showAuth) {
       return (
-        <LandingPage
-          onGetStarted={(register) => {
-            setAuthDefaultToRegister(register);
-            setShowAuth(true);
-          }}
-          onStartDemo={handleStartDemo}
-        />
+        <React.Suspense fallback={
+          <div className="min-h-screen bg-surface flex items-center justify-center">
+            <div className="w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin"></div>
+          </div>
+        }>
+          <LandingPage
+            onGetStarted={(register) => {
+              setAuthDefaultToRegister(register);
+              setShowAuth(true);
+            }}
+            onStartDemo={handleStartDemo}
+          />
+        </React.Suspense>
       );
     }
 
@@ -1009,7 +1021,9 @@ export function App() {
       )}
       
       {currentUser && !currentUser.onboardingCompleted && (
-        <OnboardingModal user={currentUser} onComplete={handleOnboardingComplete} />
+        <React.Suspense fallback={null}>
+          <OnboardingModal user={currentUser} onComplete={handleOnboardingComplete} />
+        </React.Suspense>
       )}
       
       {/* Top Application Bar */}
@@ -1347,7 +1361,12 @@ export function App() {
           </div>
         )}
 
-        <AnimatePresence mode="wait">
+        <React.Suspense fallback={
+          <div className="flex items-center justify-center min-h-[350px]">
+            <div className="w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin"></div>
+          </div>
+        }>
+          <AnimatePresence mode="wait">
           {activeTab === "dashboard" && (
             <motion.div
               key="dashboard"
@@ -1553,6 +1572,7 @@ export function App() {
             </motion.div>
           )}
         </AnimatePresence>
+        </React.Suspense>
       </main>
 
       {/* Elegant Beta Footer */}
@@ -1790,24 +1810,26 @@ export function App() {
       {/* User Profile Modal */}
       <AnimatePresence>
         {showProfileModal && (
-          <UserProfileModal
-            user={currentUser}
-            onClose={() => setShowProfileModal(false)}
-            onUpdateSuccess={(updatedUser) => {
-              saveUserSession(updatedUser);
-              setCurrentUser(updatedUser);
-            }}
-            onLogout={async () => {
-              try {
-                await apiFetch("/api/auth/logout", { method: "POST" });
-              } catch (err) {
-                console.error("Erro ao realizar logout:", err);
-              }
-              clearUserSession();
-              setCurrentUser(null);
-              setShowProfileModal(false);
-            }}
-          />
+          <React.Suspense fallback={null}>
+            <UserProfileModal
+              user={currentUser}
+              onClose={() => setShowProfileModal(false)}
+              onUpdateSuccess={(updatedUser) => {
+                saveUserSession(updatedUser);
+                setCurrentUser(updatedUser);
+              }}
+              onLogout={async () => {
+                try {
+                  await apiFetch("/api/auth/logout", { method: "POST" });
+                } catch (err) {
+                  console.error("Erro ao realizar logout:", err);
+                }
+                clearUserSession();
+                setCurrentUser(null);
+                setShowProfileModal(false);
+              }}
+            />
+          </React.Suspense>
         )}
       </AnimatePresence>
 
@@ -1909,6 +1931,18 @@ export function App() {
 }
 
 export default function RootApp() {
+  const fallbackMessage = isSentryEnabled
+    ? "Ocorreu uma falha inesperada durante a execução do aplicativo. A falha foi capturada em tempo real pelo serviço de monitoramento e registrada para análise."
+    : "Ocorreu uma falha inesperada durante a execução do aplicativo. O erro foi registrado no console da aplicação para diagnóstico local.";
+
+  if (!isSentryEnabled) {
+    return (
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    );
+  }
+
   return (
     <Sentry.ErrorBoundary
       fallback={({ error, resetError }) => (
@@ -1919,7 +1953,7 @@ export default function RootApp() {
             </div>
             <h2 className="text-xl font-bold mb-2 text-on-surface">Ops! Algo deu errado</h2>
             <p className="text-sm text-on-surface-variant mb-6">
-              Ocorreu uma falha inesperada durante a execução do aplicativo. A falha foi capturada em tempo real pelo Sentry e registrada para análise.
+              {fallbackMessage}
             </p>
             {error && (
               <div className="bg-surface-container-highest p-3 rounded-xl mb-6 text-left overflow-x-auto max-h-32 border border-outline-variant/40">
@@ -1944,9 +1978,7 @@ export default function RootApp() {
         logError(error, { type: "sentry_react_root_boundary", componentStack });
       }}
     >
-      <ErrorBoundary>
-        <App />
-      </ErrorBoundary>
+      <App />
     </Sentry.ErrorBoundary>
   );
 }

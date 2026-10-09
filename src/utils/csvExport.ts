@@ -1,62 +1,115 @@
 import { Client, Property } from "../types";
 
 /**
- * Escapes a cell value for CSV format according to RFC 4180 rules:
- * - Wrap values containing commas, double quotes, or newlines in double quotes.
- * - Escape double quotes within values by doubling them.
- * - Clean up null/undefined values.
+ * ==============================================================================
+ * METRIA CRM - EXPORTAÇÃO CSV COM NEUTRALIZAÇÃO DE INJEÇÃO DE FÓRMULAS
+ * ==============================================================================
+ *
+ * Proteções implementadas:
+ * 1. Neutralização de injeção DDE/CSV (Formula Injection):
+ *    - Células textuais iniciadas por =, +, -, @, \t, \r, % são prefixadas com apóstrofo (')
+ * 2. Preservação de números legítimos:
+ *    - Valores estritamente numéricos (inteiros, floats, negativos e positivos) não são
+ *      corrompidos ou prefixados com apóstrofo.
+ * 3. Formatação RFC 4180:
+ *    - Células contendo delimitadores (vírgula, ponto e vírgula, quebras de linha ou aspas)
+ *      são delimitadas entre aspas duplas, duplicando-se aspas internas.
  */
-function escapeCSVCell(value: any): string {
+
+const STRICT_NUMBER_REGEX = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+/**
+ * Verifica se um valor é um número legítimo (numérico ou string estritamente numérica)
+ */
+export function isLegitimateNumber(value: any): boolean {
+  if (value === null || value === undefined || value === "") {
+    return false;
+  }
+  if (typeof value === "number") {
+    return !isNaN(value) && isFinite(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "") return false;
+    // Checa formato numérico estrito sem caracteres alfabéticos, comandos ou pontuações de máscara
+    return STRICT_NUMBER_REGEX.test(trimmed) && !isNaN(Number(trimmed));
+  }
+  return false;
+}
+
+/**
+ * Escapa uma célula individual para o formato CSV prevenindo execução de fórmulas
+ */
+export function escapeCSVCell(value: any): string {
   if (value === null || value === undefined) {
     return "";
   }
-  
-  let stringValue = String(value).trim();
-  
-  // Replace newlines with spaces to avoid breaking CSV structure
-  stringValue = stringValue.replace(/\r?\n|\r/g, " ");
 
-  // If the value contains double quotes, commas, or semicolons, we escape it
-  if (stringValue.includes('"') || stringValue.includes(",") || stringValue.includes(";")) {
-    // Double the double quotes
-    stringValue = stringValue.replace(/"/g, '""');
-    return `"${stringValue}"`;
+  // Se for um número legítimo, preserva representação numérica original sem apóstrofo
+  if (isLegitimateNumber(value)) {
+    return String(value).trim();
   }
-  
+
+  let rawString = String(value);
+  const rawFirstChar = rawString.charAt(0);
+  const isDangerousControl =
+    rawFirstChar === "=" ||
+    rawFirstChar === "+" ||
+    rawFirstChar === "-" ||
+    rawFirstChar === "@" ||
+    rawFirstChar === "\t" ||
+    rawFirstChar === "\r" ||
+    rawFirstChar === "%";
+
+  let stringValue = rawString.replace(/\r?\n|\r/g, " ");
+
+  if (isDangerousControl) {
+    // Preserva o caractere de controle malicioso no início e neutraliza com apóstrofo
+    stringValue = `'${stringValue}`;
+  } else {
+    stringValue = stringValue.trim();
+    const firstChar = stringValue.charAt(0);
+    if (
+      firstChar === "=" ||
+      firstChar === "+" ||
+      firstChar === "-" ||
+      firstChar === "@" ||
+      firstChar === "\t" ||
+      firstChar === "\r" ||
+      firstChar === "%"
+    ) {
+      stringValue = `'${stringValue}`;
+    }
+  }
+
+  // Regra RFC 4180: Se contém aspas, vírgula, ponto e vírgula, tabulação ou apóstrofo em início, envolve com aspas duplas
+  if (
+    stringValue.includes('"') ||
+    stringValue.includes(",") ||
+    stringValue.includes(";") ||
+    stringValue.includes("\t") ||
+    stringValue.startsWith("'")
+  ) {
+    stringValue = `"${stringValue.replace(/"/g, '""')}"`;
+  }
+
   return stringValue;
 }
 
 /**
- * Generates and triggers the download of a CSV file.
- * Automatically injects the UTF-8 BOM so Excel opens accented characters correctly.
+ * Monta o conteúdo bruto de um arquivo CSV a partir dos cabeçalhos e linhas
  */
-export function downloadCSV(headers: string[], rows: string[][], filename: string) {
-  // Combine headers and rows with comma separation (or semicolon for Portuguese Excel)
-  // Comma is the standard, but we'll use comma. To be safe, we wrap each item.
-  const csvContent = [
+export function generateCSVString(headers: string[], rows: string[][]): string {
+  return [
     headers.join(","),
     ...rows.map(row => row.join(","))
   ].join("\n");
-
-  // UTF-8 BOM
-  const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  
-  const link = document.createElement("a");
-  link.setAttribute("href", url);
-  link.setAttribute("download", filename);
-  link.style.visibility = "hidden";
-  
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
 }
 
 /**
- * Exports clients data to CSV
+ * Gera os dados de exportação de clientes em formato CSV estruturado
  */
-export function exportClientsToCSV(clients: Client[], isFiltered: boolean = false) {
+export function buildClientsCSV(clients: Client[]): { headers: string[]; rows: string[][]; csvContent: string } {
   const headers = [
     "Nome",
     "Telefone",
@@ -102,15 +155,14 @@ export function exportClientsToCSV(clients: Client[], isFiltered: boolean = fals
     })() : "")
   ]);
 
-  const suffix = isFiltered ? "filtrados" : "completo";
-  const dateStr = new Date().toISOString().split("T")[0];
-  downloadCSV(headers, rows, `crm_clientes_${suffix}_${dateStr}.csv`);
+  const csvContent = generateCSVString(headers, rows);
+  return { headers, rows, csvContent };
 }
 
 /**
- * Exports properties data to CSV
+ * Gera os dados de exportação de imóveis em formato CSV estruturado
  */
-export function exportPropertiesToCSV(properties: Property[], isFiltered: boolean = false) {
+export function buildPropertiesCSV(properties: Property[]): { headers: string[]; rows: string[][]; csvContent: string } {
   const headers = [
     "Código",
     "Título",
@@ -166,7 +218,53 @@ export function exportPropertiesToCSV(properties: Property[], isFiltered: boolea
     })() : "")
   ]);
 
+  const csvContent = generateCSVString(headers, rows);
+  return { headers, rows, csvContent };
+}
+
+/**
+ * Aciona o download do CSV no navegador com injeção do BOM UTF-8
+ */
+export function downloadCSV(headers: string[], rows: string[][], filename: string) {
+  const csvContent = generateCSVString(headers, rows);
+
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return csvContent;
+  }
+
+  // UTF-8 BOM (\uFEFF) para exibição correta de acentuação no Excel
+  const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", filename);
+  link.style.visibility = "hidden";
+  
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  return csvContent;
+}
+
+/**
+ * Exporta clientes para CSV disparando o download
+ */
+export function exportClientsToCSV(clients: Client[], isFiltered: boolean = false) {
+  const { headers, rows } = buildClientsCSV(clients);
   const suffix = isFiltered ? "filtrados" : "completo";
   const dateStr = new Date().toISOString().split("T")[0];
-  downloadCSV(headers, rows, `crm_imoveis_${suffix}_${dateStr}.csv`);
+  return downloadCSV(headers, rows, `crm_clientes_${suffix}_${dateStr}.csv`);
+}
+
+/**
+ * Exporta imóveis para CSV disparando o download
+ */
+export function exportPropertiesToCSV(properties: Property[], isFiltered: boolean = false) {
+  const { headers, rows } = buildPropertiesCSV(properties);
+  const suffix = isFiltered ? "filtrados" : "completo";
+  const dateStr = new Date().toISOString().split("T")[0];
+  return downloadCSV(headers, rows, `crm_imoveis_${suffix}_${dateStr}.csv`);
 }

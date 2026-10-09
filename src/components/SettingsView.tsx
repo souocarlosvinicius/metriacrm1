@@ -461,8 +461,8 @@ export default function SettingsView({
         setErrorMessage("As senhas não coincidem.");
         return;
       }
-      if (password.length < 4) {
-        setErrorMessage("A nova senha deve ter no mínimo 4 caracteres.");
+      if (password.length < 6) {
+        setErrorMessage("A nova senha deve ter no mínimo 6 caracteres.");
         return;
       }
     }

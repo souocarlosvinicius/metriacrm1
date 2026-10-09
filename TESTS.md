@@ -6,28 +6,28 @@ Este documento consolida o plano de testes manuais para homologação do **Metri
 
 ## 🔐 1. Módulo de Autenticação e Sessão Real
 
-Este teste garante o funcionamento seguro do fluxo de registro, login e persistência da sessão real através de cookies `httpOnly`.
+Este teste garante o funcionamento seguro do fluxo de registro, login e persistência da sessão real através do cliente Supabase Auth integrado com validação ativa no backend.
 
 - [ ] **Cadastro de Novo Usuário (Sign Up)**:
   - Acesse a Landing Page e clique em **"Cadastre-se"**.
   - Tente cadastrar um usuário com campos vazios (deve falhar com avisos amigáveis).
   - Preencha dados válidos e registre uma conta.
-  - *Resultado esperado*: O sistema redireciona imediatamente para o modal de **Onboarding** e, em seguida, para o Dashboard comercial.
+  - *Resultado esperado*: Se a confirmação de e-mail estiver habilitada, o sistema notifica o usuário para confirmar sua caixa postal sem erro indevido. Se a sessão imediata for retornada, o sistema redireciona diretamente para o onboarding.
 
 - [ ] **Validação do Fluxo de Onboarding**:
   - Responda às perguntas do Onboarding (Foco em Vendas/Locação, Cidade Primária, etc.).
   - Salve as configurações.
-  - *Resultado esperado*: Os dados de perfil do usuário são sincronizados corretamente no backend, e a cidade primária passa a ser o valor padrão nos novos cadastros de imóveis/clientes.
+  - *Resultado esperado*: A criação da organização e do primeiro proprietário ocorre de forma atômica e validada (via RPC `create_organization_with_owner`), e os dados de perfil do usuário são sincronizados com precisão.
 
-- [ ] **Persistência de Sessão e Segurança de Cookies**:
-  - Com a conta real ativa, abra o console de desenvolvedor do navegador (F12) e inspecione o `localStorage`.
-  - *Resultado esperado*: **Não deve existir nenhum token sensível (ex: `sessionToken` ou `Authorization: Bearer` string) salvo no `localStorage`**. Apenas as preferências não sensíveis do usuário logado podem ser armazenadas.
+- [ ] **Persistência de Sessão e Segurança de Tokens**:
+  - Com a conta real ativa, abra o console de desenvolvedor do navegador (F12) e inspecione o armazenamento do navegador.
+  - *Resultado esperado*: **Tokens sensíveis não devem ser expostos em logs de telemetria ou console**. O cache de perfil não confunde a validade da sessão com dados desatualizados.
   - Pressione `F5` para recarregar a página.
-  - *Resultado esperado*: O sistema chama o endpoint `/api/auth/me`, revalida a sessão através do cookie seguro `httpOnly` de forma invisível e mantém o usuário conectado.
+  - *Resultado esperado*: O sistema revalida a sessão ativa via Supabase Auth chamando o endpoint `/api/auth/me` e mantém o usuário conectado de forma confiável.
 
 - [ ] **Logout Seguro**:
   - Clique no menu de perfil do usuário e selecione **"Sair da Conta"**.
-  - *Resultado esperado*: O sistema limpa o estado interno do React, remove o cache local, apaga o registro de usuário no `localStorage` e redireciona de volta para a Landing Page. Se tentar acessar `/api/properties` de forma direta pelo navegador, deve receber `401 Unauthorized`.
+  - *Resultado esperado*: O sistema chama `signOut` no Supabase Auth, encerra a sessão, limpa o estado interno do React e cache local e redireciona de volta para a Landing Page. Se tentar acessar rotas protegidas sem sessão, deve receber `401 Unauthorized`.
 
 ---
 
@@ -101,3 +101,43 @@ Este teste valida a segurança no upload de imagens no cadastro de imóveis.
 - [ ] **Bloqueio de Arquivos Executáveis ou Muito Grandes**:
   - Tente fazer upload de um arquivo com extensão executável (ex: `.exe`, `.js`, `.sh`, `.php`) ou de uma imagem com tamanho superior a 10MB.
   - *Resultado esperado*: O sistema deve recusar o upload imediatamente no frontend ou backend, exibindo uma mensagem de validação clara (ex: `"Tipo de arquivo não permitido"` ou `"Tamanho máximo excedido"`), sem aceitar o arquivo e sem gerar erros de servidor.
+
+---
+
+## 🛡️ 6. Testes Automatizados da Etapa 7 (Arquivos, CSV, Logs e Sentry)
+
+Execução completa:
+```bash
+npx tsx tests/step7_storage_csv_logs_sentry.test.ts
+```
+
+- [x] **Cenário 1: Upload Direto e Inválido (Magic Bytes, MIME e Tamanho)**:
+  - Validação de cabeçalho binário real (JPEG, PNG, WEBP, PDF) via Magic Bytes.
+  - Rejeição de arquivo com MIME falso (ex: declara `image/jpeg` mas contém HTML/script).
+  - Rejeição de arquivos que excedem limites confiáveis (5MB fotos / 10MB documentos).
+  - Bloqueio de upload quando a cota de armazenamento do plano do tenant é excedida.
+
+- [x] **Cenário 2: Acesso Privado entre Tenants e Separação de Mídias**:
+  - Fotos de anúncios no bucket público `property-images` sob caminho do tenant (`tenants/<orgId>/properties/...`).
+  - Documentos confidenciais no bucket privado `private-documents` acessíveis apenas via URL assinada temporária.
+  - Bloqueio cross-tenant: membros de outro tenant recebem `403 Forbidden` ao solicitar URL assinada.
+  - Detecção e limpeza de arquivos órfãos não associados a imóveis no banco de dados.
+
+- [x] **Cenário 3: CSV e Neutralização de Injeção de Fórmulas (Formula Injection)**:
+  - Células textuais iniciadas por `=`, `+`, `-`, `@`, `\t`, `\r`, `%` neutralizadas com prefixo de apóstrofo (`'`).
+  - Preservação fiel de números legítimos (ex: `350000`, `-10`, `+55`, `0`) sem apóstrofo.
+  - Teste de arquivos CSV completos de clientes e imóveis com conformidade RFC 4180.
+
+- [x] **Cenário 4: Logs Reais, Validação de Esquema, Redação e Sentry**:
+  - Validação de tamanho no endpoint `/api/logs` (máx 32KB com status 413).
+  - Validação de frequência (rate limit: máx 20 logs/min por IP com status 429).
+  - Validação de esquema (obrigatoriedade de message, limite de caracteres e níveis válidos).
+  - Redação de senhas, tokens, CPFs, e-mails, telefones e URLs de convite antes do envio.
+  - Sentry `setUser` minimizado estritamente para ID pseudônimo.
+  - Supressão de logs de payloads de clientes em ambiente de produção.
+
+- [x] **Cenário 5: DSN Ausente, Healthcheck e Classificação de HTML**:
+  - Sentry opcional e silencioso quando DSN está ausente.
+  - Healthcheck público mínimo (`/api/health`) sem consultas pesadas de banco.
+  - Diagnóstico interno detalhado (`/api/admin/diagnostic`) protegido por autenticação.
+  - `apiFetch` classifica HTML estritamente por status e `Content-Type: text/html`, sem palavras genéricas de corpo JSON.

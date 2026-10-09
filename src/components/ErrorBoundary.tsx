@@ -25,16 +25,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("[ErrorBoundary] Capturou erro de renderização:", error, errorInfo);
-    try {
-      Sentry.captureException(error, {
-        extra: {
-          componentStack: errorInfo.componentStack,
-          source: "ReactErrorBoundary"
-        }
-      });
-    } catch {
-      // Sentry fallback
-    }
+    // Delega ao logError centralizado (com deduplicação, redação de PII e Sentry condicional)
     logError(error, {
       type: "react_error_boundary",
       componentStack: errorInfo.componentStack

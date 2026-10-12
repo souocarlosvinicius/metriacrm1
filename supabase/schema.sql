@@ -1596,24 +1596,24 @@ DROP POLICY IF EXISTS "Allow authenticated users to upload to property-images" O
 CREATE POLICY "Allow authenticated users to upload to property-images" ON storage.objects
   FOR INSERT TO authenticated WITH CHECK (
     bucket_id = 'property-images' AND
-    (storage.foldername(name))[1] = 'users' AND
-    (storage.foldername(name))[2] = auth.uid()::text
+    (storage.foldername(storage.objects.name))[1] = 'users' AND
+    (storage.foldername(storage.objects.name))[2] = auth.uid()::text
   );
 
 DROP POLICY IF EXISTS "Allow authenticated users to update own property-images" ON storage.objects;
 CREATE POLICY "Allow authenticated users to update own property-images" ON storage.objects
   FOR UPDATE TO authenticated USING (
     bucket_id = 'property-images' AND
-    (storage.foldername(name))[1] = 'users' AND
-    (storage.foldername(name))[2] = auth.uid()::text
+    (storage.foldername(storage.objects.name))[1] = 'users' AND
+    (storage.foldername(storage.objects.name))[2] = auth.uid()::text
   );
 
 DROP POLICY IF EXISTS "Allow authenticated users to delete own property-images" ON storage.objects;
 CREATE POLICY "Allow authenticated users to delete own property-images" ON storage.objects
   FOR DELETE TO authenticated USING (
     bucket_id = 'property-images' AND
-    (storage.foldername(name))[1] = 'users' AND
-    (storage.foldername(name))[2] = auth.uid()::text
+    (storage.foldername(storage.objects.name))[1] = 'users' AND
+    (storage.foldername(storage.objects.name))[2] = auth.uid()::text
   );
 
 
@@ -1729,20 +1729,20 @@ GRANT EXECUTE ON FUNCTION public.delete_client_cascade(uuid) TO authenticated, s
 -- 17.5 AUTHENTICATION, ATOMIC ONBOARDING & SECURE INVITATIONS (ETAPA 4)
 -- ==============================================================================
 
--- RPC ATÔMICA: CRIAÇÃO DE ORGANIZAÇÃO COM PRIMEIRO PROPRIETÁRIO
+-- RPC ATÔMICA: CRIAÇÃO DE ORGANIZAÇÃO COM PRIMEIRO PROPRIETÁRIO (ONBOARDING)
 DROP FUNCTION IF EXISTS public.create_organization_with_owner(text, text, text, text, text, text, text, text, text, text);
 
 CREATE OR REPLACE FUNCTION public.create_organization_with_owner(
-  p_name text,
-  p_trade_name text DEFAULT NULL,
-  p_document text DEFAULT NULL,
-  p_creci text DEFAULT NULL,
-  p_phone text DEFAULT NULL,
-  p_email text DEFAULT NULL,
-  p_city text DEFAULT NULL,
-  p_state text DEFAULT NULL,
   p_account_type text DEFAULT 'agency',
-  p_plan text DEFAULT 'beta'
+  p_city text DEFAULT NULL,
+  p_creci text DEFAULT NULL,
+  p_document text DEFAULT NULL,
+  p_email text DEFAULT NULL,
+  p_name text DEFAULT NULL,
+  p_phone text DEFAULT NULL,
+  p_plan text DEFAULT 'beta',
+  p_state text DEFAULT NULL,
+  p_trade_name text DEFAULT NULL
 )
 RETURNS json
 LANGUAGE plpgsql
@@ -1753,41 +1753,86 @@ DECLARE
   v_user_id uuid;
   v_user_email text;
   v_user_name text;
+  v_existing_org record;
+  v_existing_profile record;
+  v_org record;
   v_org_id uuid;
   v_target_plan text;
   v_max_members integer;
-  v_org record;
+  v_clean_name text;
+  v_clean_trade_name text;
 BEGIN
-  -- 1. Exige autenticação estrita
+  -- 1. Exige autenticação estrita: obtém proprietário exclusivamente por auth.uid()
   v_user_id := auth.uid();
   IF v_user_id IS NULL THEN
-    RAISE EXCEPTION 'Not authenticated';
+    RAISE EXCEPTION 'Não autenticado: faça login para criar uma organização.';
   END IF;
 
   -- 2. Valida nome obrigatório
-  IF p_name IS NULL OR trim(p_name) = '' THEN
-    RAISE EXCEPTION 'Nome da organização é obrigatório';
+  v_clean_name := trim(COALESCE(p_name, ''));
+  IF v_clean_name = '' THEN
+    RAISE EXCEPTION 'Nome da organização é obrigatório.';
   END IF;
 
-  -- 3. Busca dados do perfil do usuário autenticado
-  SELECT email, COALESCE(name, username, '')
-  INTO v_user_email, v_user_name
+  v_clean_trade_name := COALESCE(NULLIF(trim(COALESCE(p_trade_name, '')), ''), v_clean_name);
+
+  -- 3. Trava transacional exclusiva por usuário (Advisory Xact Lock)
+  -- Garante serialização estrita para chamadas concorrentes/cliques duplos do mesmo usuário
+  PERFORM pg_advisory_xact_lock(hashtext('onboarding_org_' || v_user_id::text));
+
+  -- 4. Idempotência do onboarding em chamadas concorrentes/repetidas:
+  -- Se o usuário já tiver uma organização criada com o mesmo nome sob sua propriedade, retorna a existente
+  SELECT o.* INTO v_existing_org
+  FROM public.organizations o
+  WHERE o.owner_id = v_user_id
+    AND lower(trim(o.name)) = lower(v_clean_name)
+  ORDER BY o.created_at DESC
+  LIMIT 1;
+
+  IF v_existing_org.id IS NOT NULL THEN
+    -- Atualiza perfil garantindo conclusão do onboarding
+    UPDATE public.profiles
+    SET default_organization_id = COALESCE(default_organization_id, v_existing_org.id),
+        account_type = COALESCE(account_type, p_account_type, 'agency'),
+        "current_role" = 'owner',
+        "onboardingCompleted" = true,
+        "updatedAt" = timezone('utc'::text, now())
+    WHERE id = v_user_id;
+
+    RETURN json_build_object(
+      'id', v_existing_org.id,
+      'name', v_existing_org.name,
+      'tradeName', v_existing_org.trade_name,
+      'creci', v_existing_org.creci,
+      'phone', v_existing_org.phone,
+      'email', v_existing_org.email,
+      'city', v_existing_org.city,
+      'state', v_existing_org.state,
+      'ownerId', v_existing_org.owner_id,
+      'plan', v_existing_org.plan,
+      'userRole', 'owner'
+    );
+  END IF;
+
+  -- 5. Busca dados do usuário autenticado para compor o membro owner
+  SELECT * INTO v_existing_profile
   FROM public.profiles
   WHERE id = v_user_id;
 
-  -- 4. Define plano e quotas permitidas no cadastro
-  v_target_plan := LOWER(COALESCE(p_plan, 'beta'));
-  IF v_target_plan NOT IN ('beta', 'start', 'pro', 'max', 'pro_max') THEN
-    v_target_plan := 'beta';
+  v_user_email := v_existing_profile.email;
+  v_user_name := COALESCE(v_existing_profile.name, v_existing_profile.username, '');
+
+  IF v_user_email IS NULL OR v_user_email = '' THEN
+    SELECT email INTO v_user_email
+    FROM auth.users
+    WHERE id = v_user_id;
   END IF;
 
-  v_max_members := CASE
-    WHEN v_target_plan = 'pro_max' THEN 30
-    WHEN v_target_plan = 'max' THEN 5
-    ELSE 1
-  END;
+  -- 6. Fixa estritamente o plano Beta no Onboarding (ignora p_plan)
+  v_target_plan := 'beta';
+  v_max_members := 1;
 
-  -- 5. Criação atômica da organização
+  -- 7. Criação da nova organização
   INSERT INTO public.organizations (
     name,
     trade_name,
@@ -1801,10 +1846,11 @@ BEGIN
     plan,
     max_members,
     subscription_status,
-    subscription_started_at
+    subscription_started_at,
+    access_status
   ) VALUES (
-    trim(p_name),
-    COALESCE(trim(p_trade_name), trim(p_name)),
+    v_clean_name,
+    v_clean_trade_name,
     NULLIF(trim(p_document), ''),
     NULLIF(trim(p_creci), ''),
     NULLIF(trim(p_phone), ''),
@@ -1815,25 +1861,31 @@ BEGIN
     v_target_plan,
     v_max_members,
     'active',
-    timezone('utc'::text, now())
+    timezone('utc'::text, now()),
+    'active'
   )
   RETURNING * INTO v_org;
 
   v_org_id := v_org.id;
 
-  -- 6. Associação atômica como primeiro proprietário (idempotente)
+  -- 8. Associação atômica como primeiro proprietário
+  -- Idempotente com o trigger trg_handle_organization_bootstrap via ON CONFLICT
   INSERT INTO public.organization_members (
     organization_id,
     user_id,
     name,
     email,
+    phone,
+    creci,
     role,
     status
   ) VALUES (
     v_org_id,
     v_user_id,
-    COALESCE(v_user_name, 'Proprietário'),
+    COALESCE(NULLIF(v_user_name, ''), 'Proprietário'),
     COALESCE(v_user_email, ''),
+    NULLIF(trim(p_phone), ''),
+    NULLIF(trim(p_creci), ''),
     'owner',
     'active'
   )
@@ -1841,15 +1893,19 @@ BEGIN
   DO UPDATE SET
     role = 'owner',
     status = 'active',
+    name = COALESCE(NULLIF(EXCLUDED.name, ''), organization_members.name),
+    email = COALESCE(NULLIF(EXCLUDED.email, ''), organization_members.email),
+    phone = COALESCE(NULLIF(EXCLUDED.phone, ''), organization_members.phone),
+    creci = COALESCE(NULLIF(EXCLUDED.creci, ''), organization_members.creci),
     updated_at = timezone('utc'::text, now());
 
-  -- 7. Atualização do perfil do usuário com organização padrão e cargo de proprietário
+  -- 9. Atualização do perfil utilizando exclusivamente a coluna versionada "onboardingCompleted"
   UPDATE public.profiles
   SET default_organization_id = v_org_id,
       account_type = COALESCE(p_account_type, 'agency'),
       "current_role" = 'owner',
       "onboardingCompleted" = true,
-      onboarding_completed = true
+      "updatedAt" = timezone('utc'::text, now())
   WHERE id = v_user_id;
 
   IF NOT FOUND THEN
@@ -1861,20 +1917,22 @@ BEGIN
       account_type,
       "current_role",
       "onboardingCompleted",
-      onboarding_completed
+      "createdAt",
+      "updatedAt"
     ) VALUES (
       v_user_id,
-      COALESCE(v_user_name, 'Proprietário'),
+      COALESCE(NULLIF(v_user_name, ''), 'Proprietário'),
       COALESCE(v_user_email, ''),
       v_org_id,
       COALESCE(p_account_type, 'agency'),
       'owner',
       true,
-      true
+      timezone('utc'::text, now()),
+      timezone('utc'::text, now())
     );
   END IF;
 
-  -- 8. Retorno do objeto estruturado
+  -- 10. Retorno do payload JSON estruturado esperado pela aplicação
   RETURN json_build_object(
     'id', v_org.id,
     'name', v_org.name,
@@ -2182,8 +2240,7 @@ BEGIN
   UPDATE public.profiles
   SET default_organization_id = v_invite.organization_id,
       "current_role" = v_invite.role,
-      "onboardingCompleted" = true,
-      onboarding_completed = true
+      "onboardingCompleted" = true
   WHERE id = v_user_id;
 
   -- 12. Retorno com dados confirmados
@@ -3391,3 +3448,4 @@ GRANT EXECUTE ON FUNCTION public.admin_set_organization_access_status(uuid, text
 
 -- Reload PGRST Schema
 notify pgrst, 'reload schema';
+

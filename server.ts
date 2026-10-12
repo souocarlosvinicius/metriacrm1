@@ -1266,7 +1266,7 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
       p_city: city?.trim() || null,
       p_state: state?.trim() || null,
       p_account_type: accountType || "agency",
-      p_plan: plan || "beta"
+      p_plan: "beta"
     });
 
     if (!rpcErr && rpcOrg) {
@@ -1274,8 +1274,9 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
     }
 
     // If RPC is unavailable or fails due to permissions, execute atomic sequence with supabaseAdmin
-    const targetPlan = plan || 'beta';
-    const maxMembers = targetPlan === 'pro_max' ? 30 : (targetPlan === 'max' ? 5 : 1);
+    // Alinhado à RPC de 12/10: fixa estritamente plano 'beta' e max_members = 1
+    const targetPlan = 'beta';
+    const maxMembers = 1;
 
     const { data: org, error: orgErr } = await supabaseAdmin
       .from("organizations")
@@ -1327,7 +1328,6 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
         default_organization_id: org.id,
         account_type: accountType || "agency",
         current_role: "owner",
-        onboarding_completed: true,
         onboardingCompleted: true
       })
       .eq("id", req.userId);
@@ -1343,7 +1343,6 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
           default_organization_id: org.id,
           account_type: accountType || "agency",
           current_role: "owner",
-          onboarding_completed: true,
           onboardingCompleted: true
         });
 
@@ -1378,8 +1377,8 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
   }
 });
 
-// UPDATE PLAN FOR ORGANIZATION
-app.put("/api/organizations/:id/plan", requireAuth, async (req: any, res: any) => {
+// UPDATE PLAN FOR ORGANIZATION (EXCLUSIVO: OPERAÇÃO ADMINISTRATIVA INTERNA AUTORIZADA)
+app.put("/api/organizations/:id/plan", requireAuth, requireMetriaAdmin, async (req: any, res: any) => {
   if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return res.status(500).json({ error: "Supabase não está configurado." });
   }

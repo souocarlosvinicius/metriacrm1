@@ -154,11 +154,11 @@ CREATE POLICY "private_documents_tenant_select" ON storage.objects
   FOR SELECT TO authenticated
   USING (
     bucket_id = 'private-documents' AND
-    (storage.foldername(name))[1] = 'tenants' AND
+    (storage.foldername(storage.objects.name))[1] = 'tenants' AND
     EXISTS (
       SELECT 1 FROM public.organization_members om
       JOIN public.organizations o ON o.id = om.organization_id
-      WHERE om.organization_id::text = (storage.foldername(name))[2]
+      WHERE om.organization_id::text = (storage.foldername(storage.objects.name))[2]
         AND om.user_id = auth.uid()
         AND om.status = 'active'
         AND o.access_status = 'active'
@@ -170,11 +170,11 @@ CREATE POLICY "private_documents_tenant_insert" ON storage.objects
   FOR INSERT TO authenticated
   WITH CHECK (
     bucket_id = 'private-documents' AND
-    (storage.foldername(name))[1] = 'tenants' AND
+    (storage.foldername(storage.objects.name))[1] = 'tenants' AND
     EXISTS (
       SELECT 1 FROM public.organization_members om
       JOIN public.organizations o ON o.id = om.organization_id
-      WHERE om.organization_id::text = (storage.foldername(name))[2]
+      WHERE om.organization_id::text = (storage.foldername(storage.objects.name))[2]
         AND om.user_id = auth.uid()
         AND om.status = 'active'
         AND o.access_status = 'active'
@@ -186,11 +186,11 @@ CREATE POLICY "private_documents_tenant_delete" ON storage.objects
   FOR DELETE TO authenticated
   USING (
     bucket_id = 'private-documents' AND
-    (storage.foldername(name))[1] = 'tenants' AND
+    (storage.foldername(storage.objects.name))[1] = 'tenants' AND
     EXISTS (
       SELECT 1 FROM public.organization_members om
       JOIN public.organizations o ON o.id = om.organization_id
-      WHERE om.organization_id::text = (storage.foldername(name))[2]
+      WHERE om.organization_id::text = (storage.foldername(storage.objects.name))[2]
         AND om.user_id = auth.uid()
         AND om.status = 'active'
         AND om.role IN ('owner', 'admin')
@@ -205,15 +205,15 @@ CREATE POLICY "property_images_tenant_insert" ON storage.objects
   WITH CHECK (
     bucket_id = 'property-images' AND
     (
-      ((storage.foldername(name))[1] = 'tenants' AND EXISTS (
+      ((storage.foldername(storage.objects.name))[1] = 'tenants' AND EXISTS (
         SELECT 1 FROM public.organization_members om
         JOIN public.organizations o ON o.id = om.organization_id
-        WHERE om.organization_id::text = (storage.foldername(name))[2]
+        WHERE om.organization_id::text = (storage.foldername(storage.objects.name))[2]
           AND om.user_id = auth.uid()
           AND om.status = 'active'
           AND o.access_status = 'active'
       )) OR
-      ((storage.foldername(name))[1] = 'users' AND (storage.foldername(name))[2] = auth.uid()::text)
+      ((storage.foldername(storage.objects.name))[1] = 'users' AND (storage.foldername(storage.objects.name))[2] = auth.uid()::text)
     )
   );
 

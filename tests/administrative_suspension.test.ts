@@ -244,6 +244,7 @@ async function runTests() {
   console.log("\n==============================================================================");
   console.log("  TODOS OS 12 TESTES DE SUSPENSÃO E REATIVAÇÃO PASSARAM COM SUCESSO!          ");
   console.log("==============================================================================");
+  process.exit(0);
 }
 
 runTests().catch((err) => {

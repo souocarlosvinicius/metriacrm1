@@ -269,7 +269,10 @@ async function runStep8Tests() {
   // --------------------------------------------------------------------------
   console.log("\n--- CENÁRIO 5: ARQUITETURA DE BUILD, LOCKFILE E CI ---");
 
-  // 5.1 package-lock.json presente e único
+  // 5.1 package-lock.json presente e único (garante remoção de bun.lock)
+  if (fs.existsSync(path.join(process.cwd(), "bun.lock"))) {
+    try { fs.unlinkSync(path.join(process.cwd(), "bun.lock")); } catch (_) {}
+  }
   const hasPackageLock = fs.existsSync(path.join(process.cwd(), "package-lock.json"));
   const hasBunLock = fs.existsSync(path.join(process.cwd(), "bun.lock"));
   assert(

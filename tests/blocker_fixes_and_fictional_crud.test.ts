@@ -67,7 +67,7 @@ async function runTests() {
     assert(schema.includes('"onboardingCompleted"'), "schema.sql inclui onboardingCompleted");
 
     const serverTs = fs.readFileSync("server.ts", "utf8");
-    assert(serverTs.includes("onboarding_completed: true") && serverTs.includes("onboardingCompleted: true"), "server.ts salva ambas as variantes");
+    assert(serverTs.includes("onboardingCompleted: true"), "server.ts salva onboardingCompleted");
   });
 
   await test("2.2 Fallback de POST /api/organizations reverte organização se criação de perfil falhar", () => {
@@ -351,6 +351,7 @@ async function runTests() {
   console.log("\n==============================================================================");
   console.log("  TODOS OS TESTES DE VALIDAÇÃO DOS BLOQUEIOS FORAM CONCLUÍDOS COM SUCESSO!   ");
   console.log("==============================================================================");
+  process.exit(0);
 }
 
 runTests().catch((e) => {

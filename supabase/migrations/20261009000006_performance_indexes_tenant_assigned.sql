@@ -1,7 +1,7 @@
 -- ==============================================================================
 -- METRIA CRM - MIGRATION: ÍNDICES DE PERFORMANCE POR TENANT E RESPONSÁVEL
 -- Versão: 20261009000006
--- Etapa 8: Entrega Reproduzível e Otimização para Produção
+-- Etapa 8/9: Entrega Reproduzível e Otimização para Produção (Colunas Canônicas)
 -- ==============================================================================
 --
 -- ANÁLISE DE CONSULTAS E PLANOS DE EXECUÇÃO (EXPLAIN / EXPLAIN ANALYZE):
@@ -9,7 +9,7 @@
 -- 1. CONSULTA DE AGENDA DO CORRETOR (TasksView / DashboardView):
 --    SELECT * FROM tasks 
 --    WHERE organization_id = '...' 
---      AND (assigned_user_id = '...' OR assigned_user_id IS NULL)
+--      AND (assigned_to = '...' OR assigned_to IS NULL)
 --      AND date = '2026-10-09'
 --      AND completed = false;
 --    Sem índice: Seq Scan on tasks (Cost 0.00..180.00, Filter: organization_id AND date...)
@@ -25,8 +25,8 @@
 --
 -- 3. CARTEIRA DE CLIENTES POR CORRETOR / STATUS (ClientsView):
 --    SELECT * FROM clients 
---    WHERE organization_id = '...' AND assigned_user_id = '...'
---    ORDER BY updated_at DESC;
+--    WHERE organization_id = '...' AND assigned_to = '...'
+--    ORDER BY "updatedAt" DESC;
 --    Com índice composto idx_clients_tenant_assigned_updated:
 --    Index Scan on clients (Cost 0.15..6.10)
 --
@@ -35,60 +35,128 @@
 --    Garante que cada avaliação RLS ocorra em tempo sub-milissegundo via B-Tree lookup.
 -- ==============================================================================
 
--- 1. ÍNDICES NA TABELA DE TAREFAS (tasks)
-CREATE INDEX IF NOT EXISTS idx_tasks_tenant_assigned_date_completed
-  ON public.tasks (organization_id, assigned_user_id, date, completed);
+-- ==============================================================================
+-- CRIAÇÃO CONSCIENTE DO CATÁLOGO DE ÍNDICES DE PERFORMANCE
+-- Verifica o catálogo (information_schema.columns) antes de criar os índices
+-- para tolerar assigned_to vs assigned_user_id, "clientId" vs client_id,
+-- "propertyId" vs property_id, e timestamps canônicos.
+-- ==============================================================================
 
-CREATE INDEX IF NOT EXISTS idx_tasks_tenant_date
-  ON public.tasks (organization_id, date);
+CREATE OR REPLACE FUNCTION pg_temp.metria_find_col(p_table text, p_candidates text[])
+RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  c text;
+BEGIN
+  FOREACH c IN ARRAY p_candidates LOOP
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = p_table
+        AND column_name = c
+    ) THEN
+      RETURN c;
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END;
+$$;
 
--- 2. ÍNDICES NA TABELA DE IMÓVEIS (properties)
-CREATE INDEX IF NOT EXISTS idx_properties_tenant_status
-  ON public.properties (organization_id, status);
+DO $$
+DECLARE
+  v_col text;
+  v_col_extra text;
+BEGIN
+  -- 1. ÍNDICES NA TABELA DE TAREFAS (tasks)
+  v_col := pg_temp.metria_find_col('tasks', ARRAY['assigned_to', 'assigned_user_id']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_tasks_tenant_assigned_date_completed ON public.tasks (organization_id, %I, date, completed)', v_col);
+  END IF;
 
-CREATE INDEX IF NOT EXISTS idx_properties_tenant_assigned
-  ON public.properties (organization_id, assigned_user_id);
+  EXECUTE 'CREATE INDEX IF NOT EXISTS idx_tasks_tenant_date ON public.tasks (organization_id, date)';
 
-CREATE INDEX IF NOT EXISTS idx_properties_tenant_created
-  ON public.properties (organization_id, created_at DESC);
+  v_col := pg_temp.metria_find_col('tasks', ARRAY['clientId', 'client_id']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_tasks_tenant_client ON public.tasks (organization_id, %I)', v_col);
+  END IF;
 
--- 3. ÍNDICES NA TABELA DE CLIENTES (clients)
-CREATE INDEX IF NOT EXISTS idx_clients_tenant_status
-  ON public.clients (organization_id, status);
+  v_col := pg_temp.metria_find_col('tasks', ARRAY['propertyId', 'property_id']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_tasks_tenant_property ON public.tasks (organization_id, %I)', v_col);
+  END IF;
 
-CREATE INDEX IF NOT EXISTS idx_clients_tenant_assigned_updated
-  ON public.clients (organization_id, assigned_user_id, updated_at DESC);
+  -- 2. ÍNDICES NA TABELA DE IMÓVEIS (properties)
+  EXECUTE 'CREATE INDEX IF NOT EXISTS idx_properties_tenant_status ON public.properties (organization_id, status)';
 
-CREATE INDEX IF NOT EXISTS idx_clients_tenant_created
-  ON public.clients (organization_id, created_at DESC);
+  v_col := pg_temp.metria_find_col('properties', ARRAY['assigned_to', 'assigned_user_id']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_properties_tenant_assigned ON public.properties (organization_id, %I)', v_col);
+  END IF;
 
--- 4. ÍNDICES NA TABELA DE VISITAS (visits)
-CREATE INDEX IF NOT EXISTS idx_visits_tenant_assigned_date
-  ON public.visits (organization_id, assigned_user_id, date);
+  v_col := pg_temp.metria_find_col('properties', ARRAY['createdAt', 'created_at']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_properties_tenant_created ON public.properties (organization_id, %I DESC)', v_col);
+  END IF;
 
-CREATE INDEX IF NOT EXISTS idx_visits_tenant_property
-  ON public.visits (organization_id, property_id);
+  -- 3. ÍNDICES NA TABELA DE CLIENTES (clients)
+  EXECUTE 'CREATE INDEX IF NOT EXISTS idx_clients_tenant_status ON public.clients (organization_id, status)';
 
-CREATE INDEX IF NOT EXISTS idx_visits_tenant_client
-  ON public.visits (organization_id, client_id);
+  v_col := pg_temp.metria_find_col('clients', ARRAY['assigned_to', 'assigned_user_id']);
+  v_col_extra := pg_temp.metria_find_col('clients', ARRAY['updated_at', 'updatedAt']);
+  IF v_col IS NOT NULL AND v_col_extra IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_clients_tenant_assigned_updated ON public.clients (organization_id, %I, %I DESC)', v_col, v_col_extra);
+  ELSIF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_clients_tenant_assigned ON public.clients (organization_id, %I)', v_col);
+  END IF;
 
--- 5. ÍNDICES NA TABELA DE PROPOSTAS (proposals)
-CREATE INDEX IF NOT EXISTS idx_proposals_tenant_status
-  ON public.proposals (organization_id, status);
+  v_col := pg_temp.metria_find_col('clients', ARRAY['created_at', 'createdAt']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_clients_tenant_created ON public.clients (organization_id, %I DESC)', v_col);
+  END IF;
 
-CREATE INDEX IF NOT EXISTS idx_proposals_tenant_client
-  ON public.proposals (organization_id, client_id);
+  -- 4. ÍNDICES NA TABELA DE VISITAS (visits)
+  v_col := pg_temp.metria_find_col('visits', ARRAY['assigned_to', 'assigned_user_id']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_visits_tenant_assigned_date ON public.visits (organization_id, %I, date)', v_col);
+  END IF;
 
-CREATE INDEX IF NOT EXISTS idx_proposals_tenant_property
-  ON public.proposals (organization_id, property_id);
+  v_col := pg_temp.metria_find_col('visits', ARRAY['propertyId', 'property_id']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_visits_tenant_property ON public.visits (organization_id, %I)', v_col);
+  END IF;
 
--- 6. ÍNDICES NA TABELA DE HISTÓRICO DE AUDITORIA (history_events)
-CREATE INDEX IF NOT EXISTS idx_history_tenant_created
-  ON public.history_events (organization_id, created_at DESC);
+  v_col := pg_temp.metria_find_col('visits', ARRAY['clientId', 'client_id']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_visits_tenant_client ON public.visits (organization_id, %I)', v_col);
+  END IF;
 
--- 7. ÍNDICE ESSENCIAL PARA RLS (organization_members)
-CREATE INDEX IF NOT EXISTS idx_org_members_user_status
-  ON public.organization_members (user_id, status);
+  -- 5. ÍNDICES NA TABELA DE PROPOSTAS (proposals)
+  EXECUTE 'CREATE INDEX IF NOT EXISTS idx_proposals_tenant_status ON public.proposals (organization_id, status)';
 
-CREATE INDEX IF NOT EXISTS idx_org_members_org_user
-  ON public.organization_members (organization_id, user_id);
+  v_col := pg_temp.metria_find_col('proposals', ARRAY['clientId', 'client_id']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_proposals_tenant_client ON public.proposals (organization_id, %I)', v_col);
+  END IF;
+
+  v_col := pg_temp.metria_find_col('proposals', ARRAY['propertyId', 'property_id']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_proposals_tenant_property ON public.proposals (organization_id, %I)', v_col);
+  END IF;
+
+  -- 6. ÍNDICES NA TABELA DE HISTÓRICO DE AUDITORIA (history_events)
+  v_col := pg_temp.metria_find_col('history_events', ARRAY['createdAt', 'created_at']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_history_tenant_created ON public.history_events (organization_id, %I DESC)', v_col);
+  END IF;
+
+  v_col := pg_temp.metria_find_col('history_events', ARRAY['clientId', 'client_id']);
+  IF v_col IS NOT NULL THEN
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_history_tenant_client ON public.history_events (organization_id, %I)', v_col);
+  END IF;
+
+  -- 7. ÍNDICE ESSENCIAL PARA RLS (organization_members)
+  EXECUTE 'CREATE INDEX IF NOT EXISTS idx_org_members_user_status ON public.organization_members (user_id, status)';
+  EXECUTE 'CREATE INDEX IF NOT EXISTS idx_org_members_org_user ON public.organization_members (organization_id, user_id)';
+END $$;
+
+DROP FUNCTION IF EXISTS pg_temp.metria_find_col(text, text[]);

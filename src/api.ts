@@ -19,8 +19,10 @@ function mapProfileToDB(user: any): any {
   if (user.phone !== undefined) dbUser.phone = String(user.phone).trim();
   if (user.whatsapp !== undefined && !user.phone) dbUser.phone = String(user.whatsapp).trim();
   
-  if (user.onboardingCompleted !== undefined) {
-    dbUser.onboardingCompleted = Boolean(user.onboardingCompleted);
+  if (user.onboardingCompleted !== undefined || user.onboarding_completed !== undefined) {
+    const isCompleted = Boolean(user.onboardingCompleted !== undefined ? user.onboardingCompleted : user.onboarding_completed);
+    dbUser.onboardingCompleted = isCompleted;
+    dbUser.onboarding_completed = isCompleted;
   }
   if (user.commercialName !== undefined) {
     dbUser.commercialName = String(user.commercialName).trim();
@@ -727,6 +729,46 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       return data?.role || null;
     };
 
+    const checkOrgAccess = async (orgId: string, userId: string): Promise<{ authorized: boolean; role: string | null; error?: string; code?: string }> => {
+      // 1. Valida se a organização está suspensa
+      const { data: org, error: orgErr } = await supabase
+        .from("organizations")
+        .select("access_status, suspension_reason, suspended_at")
+        .eq("id", orgId)
+        .maybeSingle();
+
+      if (orgErr) {
+        return { authorized: false, role: null, error: orgErr.message, code: "DB_ERROR" };
+      }
+
+      if (!org) {
+        return { authorized: false, role: null, error: "Organização não encontrada.", code: "ORG_NOT_FOUND" };
+      }
+
+      const accessStatus = String(org.access_status || "active").toLowerCase();
+      if (accessStatus === "suspended") {
+        return {
+          authorized: false,
+          role: null,
+          error: "Seu acesso está temporariamente suspenso por pendência financeira. Seus dados estão preservados. Entre em contato com a Metria para regularizar.",
+          code: "ORGANIZATION_SUSPENDED"
+        };
+      }
+
+      // 2. Valida membership ativa
+      const role = await getOrgMemberRole(orgId, userId);
+      if (!role) {
+        return {
+          authorized: false,
+          role: null,
+          error: "Acesso negado: vínculo inativo ou ausente na organização.",
+          code: "MEMBERSHIP_INACTIVE"
+        };
+      }
+
+      return { authorized: true, role };
+    };
+
     const checkPlanLimit = async (
       orgId: string | null | undefined,
       resource: "clients" | "properties" | "members"
@@ -857,6 +899,32 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       }
     }
 
+    // Forward /api/admin/ requests to Express backend with bearer token
+    if (pathname.startsWith("/api/admin/")) {
+      init = init || {};
+      init.headers = {
+        ...(init.headers || {}),
+        "Content-Type": "application/json"
+      };
+      try {
+        const session = await getActiveUserSession().catch(() => null);
+        if (session?.access_token) {
+          (init.headers as any)["Authorization"] = `Bearer ${session.access_token}`;
+        }
+      } catch {}
+
+      try {
+        const targetHost = typeof window !== "undefined" && window.location?.origin
+          ? window.location.origin
+          : "http://localhost:3000";
+        const fetchFn = typeof window !== "undefined" ? window.fetch : fetch;
+        return await fetchFn(`${targetHost}${pathname}${url.search || ""}`, init);
+      } catch (err: any) {
+        console.error("[Admin API Fetch Error]", err);
+        return mockResponse({ error: "Servidor administrativo indisponível", code: "ADMIN_SERVER_UNAVAILABLE" }, 503);
+      }
+    }
+
     // Forward /api/logs to Express backend
     if (pathname === "/api/logs") {
       init = init || {};
@@ -980,6 +1048,14 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
               state: org.state || "",
               ownerId: org.owner_id,
               plan: org.plan || "beta",
+              accessStatus: org.access_status || "active",
+              access_status: org.access_status || "active",
+              suspendedAt: org.suspended_at,
+              suspended_at: org.suspended_at,
+              suspensionReason: org.suspension_reason,
+              suspension_reason: org.suspension_reason,
+              suspendedBy: org.suspended_by,
+              suspended_by: org.suspended_by,
               userRole: membership?.role || (org.owner_id === session.user.id ? "owner" : "member"),
               userStatus: membership?.status || "active"
             };
@@ -1053,29 +1129,52 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           }
 
           // Create organization_members entry for owner
-          try {
-            await supabase.from("organization_members").upsert({
-              organization_id: newOrg.id,
-              user_id: session.user.id,
-              name: session.user.user_metadata?.name || session.user.email?.split("@")[0] || "Proprietário",
-              email: session.user.email || "",
-              role: "owner",
-              status: "active"
-            });
-          } catch (mErr) {
-            console.warn("Aviso ao criar membro:", mErr);
+          const { error: mErr } = await supabase.from("organization_members").upsert({
+            organization_id: newOrg.id,
+            user_id: session.user.id,
+            name: session.user.user_metadata?.name || session.user.email?.split("@")[0] || "Proprietário",
+            email: session.user.email || "",
+            role: "owner",
+            status: "active"
+          });
+
+          if (mErr) {
+            console.error("Erro ao criar membro da organização, revertendo criação:", mErr);
+            await supabase.from("organizations").delete().eq("id", newOrg.id);
+            return mockResponse({ error: `Falha ao associar proprietário: ${mErr.message}` }, 400);
           }
 
           // Update user profile default_organization_id
-          try {
-            await supabase.from("profiles").update({
+          let { error: pErr } = await supabase.from("profiles").update({
+            default_organization_id: newOrg.id,
+            account_type: accountType || "agency",
+            "current_role": "owner",
+            onboarding_completed: true,
+            "onboardingCompleted": true
+          }).eq("id", session.user.id);
+
+          if (pErr) {
+            // Tenta criar perfil se não existir
+            const { error: insErr } = await supabase.from("profiles").insert({
+              id: session.user.id,
+              name: session.user.user_metadata?.name || session.user.email?.split("@")[0] || "Proprietário",
+              email: session.user.email || "",
               default_organization_id: newOrg.id,
               account_type: accountType || "agency",
-              current_role: "owner",
-              onboarding_completed: true
-            }).eq("id", session.user.id);
-          } catch (pErr) {
-            console.warn("Aviso ao atualizar perfil:", pErr);
+              "current_role": "owner",
+              onboarding_completed: true,
+              "onboardingCompleted": true
+            });
+            if (!insErr) {
+              pErr = null;
+            }
+          }
+
+          if (pErr) {
+            console.error("Erro ao atualizar perfil do usuário, revertendo organização:", pErr);
+            await supabase.from("organization_members").delete().eq("organization_id", newOrg.id);
+            await supabase.from("organizations").delete().eq("id", newOrg.id);
+            return mockResponse({ error: `Falha ao salvar perfil do proprietário: ${pErr.message}` }, 400);
           }
 
           return mockResponse({
@@ -1341,6 +1440,13 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       if (body?.creci !== undefined && typeof body.creci === "string") updateFields.creci = body.creci.trim();
       if (body?.primaryCity !== undefined && typeof body.primaryCity === "string") updateFields.primaryCity = body.primaryCity.trim();
       if (body?.actingType !== undefined && typeof body.actingType === "string") updateFields.actingType = body.actingType.trim();
+
+      // Alinhamento explícito de onboarding em profiles
+      if (body?.onboardingCompleted !== undefined || body?.onboarding_completed !== undefined) {
+        const isDone = Boolean(body.onboardingCompleted !== undefined ? body.onboardingCompleted : body.onboarding_completed);
+        updateFields.onboardingCompleted = isDone;
+        updateFields.onboarding_completed = isDone;
+      }
 
       // Configurações comerciais persistidas com validação rigorosa
       if (body?.defaultCommissionPercent !== undefined && body?.defaultCommissionPercent !== null) {
@@ -1869,8 +1975,9 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         .update({
           default_organization_id: invite.organization_id,
           account_type: "agency",
-          current_role: invite.role,
-          onboarding_completed: true
+          "current_role": invite.role,
+          onboarding_completed: true,
+          "onboardingCompleted": true
         })
         .eq("id", session.user.id);
 
@@ -2007,10 +2114,18 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         // Obtém organização ativa do usuário
         const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
         const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
-        const activeOrgId = headerOrgId || profile?.default_organization_id || session.user.id;
+        const activeOrgId = headerOrgId || profile?.default_organization_id;
+
+        if (activeOrgId) {
+          const accessCheck = await checkOrgAccess(activeOrgId, session.user.id);
+          if (!accessCheck.authorized) {
+            return mockResponse({ error: accessCheck.error }, 403);
+          }
+        }
 
         // Validação de cota de armazenamento do tenant
-        const { data: org } = await supabase.from("organizations").select("plan").eq("id", activeOrgId).maybeSingle();
+        const targetTenantId = activeOrgId || session.user.id;
+        const { data: org } = await supabase.from("organizations").select("plan").eq("id", targetTenantId).maybeSingle();
         const plan = org?.plan || "beta";
 
         const quotaCheck = checkTenantQuota(activeOrgId, plan, buffer.length);
@@ -2055,11 +2170,13 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
       const activeOrgId = headerOrgId || profile?.default_organization_id;
 
+      let userRole: string | null = null;
       if (activeOrgId) {
-        const userRole = await getOrgMemberRole(activeOrgId, session.user.id);
-        if (!userRole) {
-          return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+        const accessCheck = await checkOrgAccess(activeOrgId, session.user.id);
+        if (!accessCheck.authorized) {
+          return mockResponse({ error: accessCheck.error }, 403);
         }
+        userRole = accessCheck.role;
       }
 
       if (method === "GET") {
@@ -2226,11 +2343,13 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
       const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
       const { data: profile } = await supabase.from("profiles").select("default_organization_id, name").eq("id", session.user.id).maybeSingle();
-      const activeOrgId = headerOrgId || profile?.default_organization_id;
-      const userRole = activeOrgId ? await getOrgMemberRole(activeOrgId, session.user.id) : null;
-
-      if (activeOrgId && !userRole) {
-        return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+      let userRole: string | null = null;
+      if (activeOrgId) {
+        const accessCheck = await checkOrgAccess(activeOrgId, session.user.id);
+        if (!accessCheck.authorized) {
+          return mockResponse({ error: accessCheck.error }, 403);
+        }
+        userRole = accessCheck.role;
       }
 
       if (method === "GET") {
@@ -2618,11 +2737,13 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
       const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
       const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
-      const activeOrgId = headerOrgId || profile?.default_organization_id;
-      const userRole = activeOrgId ? await getOrgMemberRole(activeOrgId, session.user.id) : null;
-
-      if (activeOrgId && !userRole) {
-        return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+      let userRole: string | null = null;
+      if (activeOrgId) {
+        const accessCheck = await checkOrgAccess(activeOrgId, session.user.id);
+        if (!accessCheck.authorized) {
+          return mockResponse({ error: accessCheck.error }, 403);
+        }
+        userRole = accessCheck.role;
       }
 
       if (method === "GET") {
@@ -2755,11 +2876,13 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
       const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
       const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
-      const activeOrgId = headerOrgId || profile?.default_organization_id;
-      const userRole = activeOrgId ? await getOrgMemberRole(activeOrgId, session.user.id) : null;
-
-      if (activeOrgId && !userRole) {
-        return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+      let userRole: string | null = null;
+      if (activeOrgId) {
+        const accessCheck = await checkOrgAccess(activeOrgId, session.user.id);
+        if (!accessCheck.authorized) {
+          return mockResponse({ error: accessCheck.error }, 403);
+        }
+        userRole = accessCheck.role;
       }
 
       if (method === "GET") {
@@ -2892,11 +3015,13 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
       const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
       const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
-      const activeOrgId = headerOrgId || profile?.default_organization_id;
-      const userRole = activeOrgId ? await getOrgMemberRole(activeOrgId, session.user.id) : null;
-
-      if (activeOrgId && !userRole) {
-        return mockResponse({ error: "Acesso negado: vínculo inativo ou ausente na organização." }, 403);
+      let userRole: string | null = null;
+      if (activeOrgId) {
+        const accessCheck = await checkOrgAccess(activeOrgId, session.user.id);
+        if (!accessCheck.authorized) {
+          return mockResponse({ error: accessCheck.error }, 403);
+        }
+        userRole = accessCheck.role;
       }
 
       if (method === "GET") {
@@ -3060,6 +3185,13 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       const headerOrgId = (init?.headers as any)?.["X-Organization-Id"] || (init?.headers as any)?.["x-organization-id"];
       const { data: profile } = await supabase.from("profiles").select("default_organization_id").eq("id", session.user.id).maybeSingle();
       const activeOrgId = headerOrgId || profile?.default_organization_id;
+
+      if (activeOrgId) {
+        const accessCheck = await checkOrgAccess(activeOrgId, session.user.id);
+        if (!accessCheck.authorized) {
+          return mockResponse({ error: accessCheck.error }, 403);
+        }
+      }
 
       if (method === "GET") {
         let query = supabase.from("settings").select("*");

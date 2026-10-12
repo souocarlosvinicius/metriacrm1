@@ -37,9 +37,9 @@ BEGIN
       SELECT email INTO NEW.email FROM auth.users WHERE id = OLD.id;
     END IF;
 
-    -- 3. current_role e role só podem ser alterados por RPCs/triggers autorizados (SECURITY DEFINER)
-    IF NEW.current_role IS DISTINCT FROM OLD.current_role THEN
-      NEW.current_role := OLD.current_role;
+    -- 3. "current_role" e role só podem ser alterados por RPCs/triggers autorizados (SECURITY DEFINER)
+    IF NEW."current_role" IS DISTINCT FROM OLD."current_role" THEN
+      NEW."current_role" := OLD."current_role";
     END IF;
     IF NEW.role IS DISTINCT FROM OLD.role THEN
       NEW.role := OLD.role;

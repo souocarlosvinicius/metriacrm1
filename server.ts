@@ -226,6 +226,52 @@ const requireAuth = async (req: any, res: any, next: any) => {
   return res.status(401).json({ error: "Supabase não configurado no servidor. Não é possível autenticar." });
 };
 
+// ==========================================
+// AUTORIDADE ADMINISTRATIVA METRIA
+// ==========================================
+
+export function isMetriaInternalAdmin(userId: string | null | undefined): boolean {
+  if (!userId) return false;
+  const adminIdsStr = process.env.METRIA_ADMIN_USER_IDS;
+  if (!adminIdsStr || typeof adminIdsStr !== "string" || !adminIdsStr.trim()) {
+    return false;
+  }
+  const adminIds = adminIdsStr
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+  return adminIds.includes(userId);
+}
+
+const requireMetriaAdmin = async (req: any, res: any, next: any) => {
+  const userId = req.userId;
+  if (!userId) {
+    return res.status(401).json({
+      error: "Sessão inválida ou não autenticada. Token Supabase ausente ou expirado.",
+      code: "UNAUTHENTICATED"
+    });
+  }
+
+  const adminEnv = process.env.METRIA_ADMIN_USER_IDS;
+  if (!adminEnv || !adminEnv.trim()) {
+    console.warn("[METRIA ADMIN DENIED] Tentativa de acesso a rota administrativa, mas a variável METRIA_ADMIN_USER_IDS não está configurada no backend.");
+    return res.status(403).json({
+      error: "Acesso negado: a lista de administradores internos (METRIA_ADMIN_USER_IDS) não está configurada no servidor.",
+      code: "METRIA_ADMIN_CONFIG_MISSING"
+    });
+  }
+
+  if (!isMetriaInternalAdmin(userId)) {
+    console.warn(`[METRIA ADMIN DENIED] Usuário autenticado "${userId}" não consta na lista de administradores configurada.`);
+    return res.status(403).json({
+      error: "Acesso negado: o usuário autenticado não possui autorização administrativa interna para executar esta operação.",
+      code: "METRIA_ADMIN_FORBIDDEN"
+    });
+  }
+
+  next();
+};
+
 // Validação Segura de Associação Ativa, Assinatura e Plano para o Gemini
 // X-Organization-Id NÃO comprova vínculo. A associação ativa DEVE ser checada antes de qualquer autorização de plano.
 const requireGeminiPlan = async (req: any, res: any, next: any) => {
@@ -248,7 +294,7 @@ const requireGeminiPlan = async (req: any, res: any, next: any) => {
 
     if (targetOrgId) {
       // 1. Valida se o usuário autenticado tem vínculo ativo na organização indicada
-      const { data: member } = await supabaseAdmin
+      const { data: member, error: memErr } = await supabaseAdmin
         .from("organization_members")
         .select("organization_id, role, status")
         .eq("organization_id", targetOrgId)
@@ -256,12 +302,28 @@ const requireGeminiPlan = async (req: any, res: any, next: any) => {
         .eq("status", "active")
         .maybeSingle();
 
-      const { data: ownedOrg } = await supabaseAdmin
+      if (memErr) {
+        console.error("Erro na verificação de membro para o Gemini:", memErr);
+        return res.status(500).json({
+          error: `Erro ao verificar vínculo da organização: ${memErr.message}`,
+          code: "DB_QUERY_ERROR"
+        });
+      }
+
+      const { data: ownedOrg, error: ownedErr } = await supabaseAdmin
         .from("organizations")
         .select("id")
         .eq("id", targetOrgId)
         .eq("owner_id", userId)
         .maybeSingle();
+
+      if (ownedErr) {
+        console.error("Erro na verificação de proprietário para o Gemini:", ownedErr);
+        return res.status(500).json({
+          error: `Erro ao verificar vínculo de proprietário: ${ownedErr.message}`,
+          code: "DB_QUERY_ERROR"
+        });
+      }
 
       if (!member && !ownedOrg) {
         return res.status(403).json({
@@ -271,16 +333,24 @@ const requireGeminiPlan = async (req: any, res: any, next: any) => {
       }
     } else {
       // Busca a organização ativa do perfil
-      const { data: profile } = await supabaseAdmin
+      const { data: profile, error: profErr } = await supabaseAdmin
         .from("profiles")
         .select("default_organization_id")
         .eq("id", userId)
         .maybeSingle();
 
+      if (profErr) {
+        console.error("Erro na busca de perfil para o Gemini:", profErr);
+        return res.status(500).json({
+          error: `Erro ao consultar perfil do usuário: ${profErr.message}`,
+          code: "DB_QUERY_ERROR"
+        });
+      }
+
       if (profile?.default_organization_id) {
         targetOrgId = profile.default_organization_id;
 
-        const { data: member } = await supabaseAdmin
+        const { data: member, error: memErr } = await supabaseAdmin
           .from("organization_members")
           .select("status")
           .eq("organization_id", targetOrgId)
@@ -288,12 +358,28 @@ const requireGeminiPlan = async (req: any, res: any, next: any) => {
           .eq("status", "active")
           .maybeSingle();
 
-        const { data: ownedOrg } = await supabaseAdmin
+        if (memErr) {
+          console.error("Erro na verificação de membro padrão:", memErr);
+          return res.status(500).json({
+            error: `Erro ao verificar vínculo de membro: ${memErr.message}`,
+            code: "DB_QUERY_ERROR"
+          });
+        }
+
+        const { data: ownedOrg, error: ownedErr } = await supabaseAdmin
           .from("organizations")
           .select("id")
           .eq("id", targetOrgId)
           .eq("owner_id", userId)
           .maybeSingle();
+
+        if (ownedErr) {
+          console.error("Erro na verificação de proprietário padrão:", ownedErr);
+          return res.status(500).json({
+            error: `Erro ao verificar vínculo de proprietário: ${ownedErr.message}`,
+            code: "DB_QUERY_ERROR"
+          });
+        }
 
         if (!member && !ownedOrg) {
           targetOrgId = null;
@@ -302,13 +388,21 @@ const requireGeminiPlan = async (req: any, res: any, next: any) => {
 
       if (!targetOrgId) {
         // Busca primeira organização ativa vinculada
-        const { data: firstMember } = await supabaseAdmin
+        const { data: firstMember, error: firstErr } = await supabaseAdmin
           .from("organization_members")
           .select("organization_id")
           .eq("user_id", userId)
           .eq("status", "active")
           .limit(1)
           .maybeSingle();
+
+        if (firstErr) {
+          console.error("Erro na busca de primeira organização ativa:", firstErr);
+          return res.status(500).json({
+            error: `Erro ao buscar organizações ativas: ${firstErr.message}`,
+            code: "DB_QUERY_ERROR"
+          });
+        }
 
         targetOrgId = firstMember?.organization_id;
       }
@@ -321,15 +415,32 @@ const requireGeminiPlan = async (req: any, res: any, next: any) => {
       }
     }
 
-    // 2. Busca a organização validada
+    // 2. Busca a organização validada (usando a coluna canônica subscription_expires_at e access_status)
     const { data: org, error: orgErr } = await supabaseAdmin
       .from("organizations")
-      .select("id, name, plan, subscription_status, subscription_expires_at, subscription_end_at")
+      .select("id, name, plan, subscription_status, subscription_expires_at, access_status")
       .eq("id", targetOrgId)
       .maybeSingle();
 
-    if (orgErr || !org) {
+    if (orgErr) {
+      console.error("Erro na consulta de organização para validação de plano Gemini:", orgErr);
+      return res.status(500).json({
+        error: `Erro de banco de dados ao verificar a organização: ${orgErr.message}`,
+        code: "DB_QUERY_ERROR"
+      });
+    }
+
+    if (!org) {
       return res.status(404).json({ error: "Organização vinculada não encontrada.", code: "ORG_NOT_FOUND" });
+    }
+
+    // 2.1 Validação de Suspensão Administrativa por Inadimplência
+    const accessStatus = String(org.access_status || "active").toLowerCase();
+    if (accessStatus === "suspended") {
+      return res.status(403).json({
+        error: "Seu acesso está temporariamente suspenso por pendência financeira. Seus dados estão preservados. Entre em contato com a Metria para regularizar.",
+        code: "ORGANIZATION_SUSPENDED"
+      });
     }
 
     // 3. Validação de Assinatura Ativa
@@ -341,8 +452,8 @@ const requireGeminiPlan = async (req: any, res: any, next: any) => {
       });
     }
 
-    // 4. Validação de Expiração de Assinatura
-    const expStr = org.subscription_expires_at || org.subscription_end_at;
+    // 4. Validação de Expiração de Assinatura (coluna canônica subscription_expires_at)
+    const expStr = org.subscription_expires_at;
     if (expStr) {
       const expDate = new Date(expStr).getTime();
       if (!isNaN(expDate) && expDate < Date.now()) {
@@ -724,12 +835,20 @@ app.post("/api/upload", requireAuth, async (req: any, res: any) => {
       activeOrgId = profile?.default_organization_id || userId;
     }
 
-    // Validação de cota do tenant
+    // Validação de cota do tenant e status de acesso
     const { data: org } = await supabaseAdmin
       .from("organizations")
-      .select("plan")
+      .select("plan, access_status")
       .eq("id", activeOrgId)
       .maybeSingle();
+
+    if (org && (org.access_status === "suspended" || (org as any).accessStatus === "suspended")) {
+      return res.status(403).json({
+        error: "Seu acesso está temporariamente suspenso por pendência financeira. Seus dados estão preservados. Entre em contato com a Metria para regularizar.",
+        code: "ORGANIZATION_SUSPENDED"
+      });
+    }
+
     const plan = org?.plan || "beta";
 
     const quotaCheck = checkTenantQuota(activeOrgId, plan, buffer.length);
@@ -820,12 +939,20 @@ app.post("/api/storage/documents/upload", requireAuth, async (req: any, res: any
       activeOrgId = profile?.default_organization_id || userId;
     }
 
-    // Validação de cota do tenant
+    // Validação de cota do tenant e status de acesso
     const { data: org } = await supabaseAdmin
       .from("organizations")
-      .select("plan")
+      .select("plan, access_status")
       .eq("id", activeOrgId)
       .maybeSingle();
+
+    if (org && (org.access_status === "suspended" || (org as any).accessStatus === "suspended")) {
+      return res.status(403).json({
+        error: "Seu acesso está temporariamente suspenso por pendência financeira. Seus dados estão preservados. Entre em contato com a Metria para regularizar.",
+        code: "ORGANIZATION_SUSPENDED"
+      });
+    }
+
     const plan = org?.plan || "beta";
 
     const quotaCheck = checkTenantQuota(activeOrgId, plan, buffer.length);
@@ -909,6 +1036,20 @@ app.post("/api/storage/documents/sign-url", requireAuth, async (req: any, res: a
       return res.status(403).json({
         error: "Acesso negado: o documento solicitado pertence a outro tenant ou você não possui autorização.",
         code: "CROSS_TENANT_ACCESS_DENIED"
+      });
+    }
+
+    // Valida se a organização do documento está com acesso suspenso por pendência financeira
+    const { data: documentOrg } = await supabaseAdmin
+      .from("organizations")
+      .select("access_status")
+      .eq("id", documentOrgId)
+      .maybeSingle();
+
+    if (documentOrg && (documentOrg.access_status === "suspended" || (documentOrg as any).accessStatus === "suspended")) {
+      return res.status(403).json({
+        error: "Seu acesso está temporariamente suspenso por pendência financeira. Seus dados estão preservados. Entre em contato com a Metria para regularizar.",
+        code: "ORGANIZATION_SUSPENDED"
       });
     }
 
@@ -1074,6 +1215,14 @@ app.get("/api/organizations", requireAuth, async (req: any, res: any) => {
         state: org.state,
         ownerId: org.owner_id,
         plan: org.plan,
+        accessStatus: org.access_status || "active",
+        access_status: org.access_status || "active",
+        suspendedAt: org.suspended_at,
+        suspended_at: org.suspended_at,
+        suspensionReason: org.suspension_reason,
+        suspension_reason: org.suspension_reason,
+        suspendedBy: org.suspended_by,
+        suspended_by: org.suspended_by,
         userRole: membership?.role,
         userStatus: membership?.status
       };
@@ -1165,13 +1314,14 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
         status: "active"
       });
 
-    if (memErr && !memErr.message.includes("unique_org_user")) {
-      console.error("Erro ao criar membro da organização:", memErr);
-      return res.status(400).json({ error: memErr.message });
+    if (memErr && !memErr.message?.includes("unique_org_user")) {
+      console.error("Erro ao criar membro da organização. Revertendo organização:", memErr);
+      await supabaseAdmin.from("organizations").delete().eq("id", org.id);
+      return res.status(400).json({ error: `Falha ao associar proprietário: ${memErr.message}` });
     }
 
     // 3. Update profiles table
-    const { error: profErr } = await supabaseAdmin
+    let { error: profErr } = await supabaseAdmin
       .from("profiles")
       .update({
         default_organization_id: org.id,
@@ -1183,8 +1333,30 @@ app.post("/api/organizations", requireAuth, async (req: any, res: any) => {
       .eq("id", req.userId);
 
     if (profErr) {
-      console.error("Erro ao atualizar perfil do usuário:", profErr);
-      return res.status(400).json({ error: profErr.message });
+      // Se update falhou por perfil inexistente, tenta criar
+      const { error: insErr } = await supabaseAdmin
+        .from("profiles")
+        .insert({
+          id: req.userId,
+          name: req.user?.user_metadata?.name || req.user?.email?.split('@')[0] || "Proprietário",
+          email: req.user?.email || "",
+          default_organization_id: org.id,
+          account_type: accountType || "agency",
+          current_role: "owner",
+          onboarding_completed: true,
+          onboardingCompleted: true
+        });
+
+      if (!insErr) {
+        profErr = null;
+      }
+    }
+
+    if (profErr) {
+      console.error("Erro ao atualizar perfil do usuário. Revertendo criação de organização e membro:", profErr);
+      await supabaseAdmin.from("organization_members").delete().eq("organization_id", org.id);
+      await supabaseAdmin.from("organizations").delete().eq("id", org.id);
+      return res.status(400).json({ error: `Falha ao salvar perfil do proprietário: ${profErr.message}` });
     }
 
     return res.status(201).json({
@@ -1263,6 +1435,171 @@ app.put("/api/organizations/:id/plan", requireAuth, async (req: any, res: any) =
     });
   } catch (err: any) {
     console.error("Erro no endpoint PUT /api/organizations/:id/plan:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ==============================================================================
+// OPERAÇÕES ADMINISTRATIVAS DE SUSPENSÃO E REATIVAÇÃO (METRIA INTERNAL ADMIN)
+// ==============================================================================
+
+// CONSULTA SE O USUÁRIO AUTENTICADO POSSUI AUTORIDADE ADMINISTRATIVA INTERNA
+app.get("/api/admin/check-authority", requireAuth, async (req: any, res: any) => {
+  const isInternalAdmin = isMetriaInternalAdmin(req.userId);
+  return res.json({
+    userId: req.userId,
+    isInternalAdmin
+  });
+});
+
+// CONSULTAR ESTADO DE ACESSO DA ORGANIZAÇÃO (COM AUDITORIA)
+app.get("/api/admin/organizations/:id/access-status", requireAuth, requireMetriaAdmin, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não está configurado no servidor." });
+  }
+
+  const orgId = req.params.id;
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const { data: org, error: orgErr } = await supabaseAdmin
+      .from("organizations")
+      .select("id, name, trade_name, plan, subscription_status, access_status, suspended_at, suspension_reason, suspended_by, created_at, updated_at")
+      .eq("id", orgId)
+      .maybeSingle();
+
+    if (orgErr) {
+      return res.status(500).json({ error: `Erro ao consultar organização: ${orgErr.message}` });
+    }
+
+    if (!org) {
+      return res.status(404).json({ error: "Organização não encontrada.", code: "ORG_NOT_FOUND" });
+    }
+
+    // Busca histórico administrativo de auditoria
+    const { data: audit, error: auditErr } = await supabaseAdmin
+      .from("organization_access_audit")
+      .select("*")
+      .eq("organization_id", orgId)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    return res.json({
+      id: org.id,
+      name: org.name,
+      tradeName: org.trade_name,
+      plan: org.plan,
+      subscriptionStatus: org.subscription_status,
+      accessStatus: org.access_status || "active",
+      access_status: org.access_status || "active",
+      suspendedAt: org.suspended_at,
+      suspended_at: org.suspended_at,
+      suspensionReason: org.suspension_reason,
+      suspension_reason: org.suspension_reason,
+      suspendedBy: org.suspended_by,
+      suspended_by: org.suspended_by,
+      auditHistory: audit || []
+    });
+  } catch (err: any) {
+    console.error("Erro no endpoint GET /api/admin/organizations/:id/access-status:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// SUSPENDER ORGANIZAÇÃO POR INADIMPLÊNCIA (EXIGE MOTIVO)
+app.post("/api/admin/organizations/:id/suspend", requireAuth, requireMetriaAdmin, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não está configurado no servidor." });
+  }
+
+  const orgId = req.params.id;
+  const { reason, metadata = {} } = req.body || {};
+  const trimmedReason = typeof reason === "string" ? reason.trim() : "";
+
+  if (!trimmedReason) {
+    return res.status(400).json({
+      error: "Motivo administrativo é obrigatório para suspensão da organização.",
+      code: "REASON_REQUIRED"
+    });
+  }
+
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    // Executa atomicamente via RPC transacional
+    const { data, error } = await supabaseAdmin.rpc("admin_set_organization_access_status", {
+      p_org_id: orgId,
+      p_new_status: "suspended",
+      p_reason: trimmedReason,
+      p_admin_id: req.userId,
+      p_metadata: metadata
+    });
+
+    if (error) {
+      console.error("Erro na RPC admin_set_organization_access_status ao suspender:", error);
+      if (error.message.includes("não encontrada") || error.message.includes("not found")) {
+        return res.status(404).json({ error: "Organização não encontrada.", code: "ORG_NOT_FOUND" });
+      }
+      return res.status(400).json({ error: error.message });
+    }
+
+    console.log(`[METRIA ADMIN] Organização ${orgId} SUSPENSA por ${req.userId}. Motivo: "${trimmedReason}"`);
+
+    return res.json({
+      success: true,
+      message: "Organização suspensa com sucesso. Dados preservados e acesso a recursos bloqueado.",
+      result: data
+    });
+  } catch (err: any) {
+    console.error("Erro no endpoint POST /api/admin/organizations/:id/suspend:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// REATIVAR ORGANIZAÇÃO (REMOVE APENAS A SUSPENSÃO ADMINISTRATIVA)
+app.post("/api/admin/organizations/:id/reactivate", requireAuth, requireMetriaAdmin, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não está configurado no servidor." });
+  }
+
+  const orgId = req.params.id;
+  const { reason = "Reativação administrativa manual", metadata = {} } = req.body || {};
+  const trimmedReason = typeof reason === "string" ? reason.trim() : "Reativação administrativa manual";
+
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    // Executa atomicamente via RPC transacional
+    // Reativar remove somente a suspensão administrativa.
+    // Não altera plano, pagamento, datas de validade ou limites comerciais.
+    const { data, error } = await supabaseAdmin.rpc("admin_set_organization_access_status", {
+      p_org_id: orgId,
+      p_new_status: "active",
+      p_reason: trimmedReason,
+      p_admin_id: req.userId,
+      p_metadata: metadata
+    });
+
+    if (error) {
+      console.error("Erro na RPC admin_set_organization_access_status ao reativar:", error);
+      if (error.message.includes("não encontrada") || error.message.includes("not found")) {
+        return res.status(404).json({ error: "Organização não encontrada.", code: "ORG_NOT_FOUND" });
+      }
+      return res.status(400).json({ error: error.message });
+    }
+
+    console.log(`[METRIA ADMIN] Organização ${orgId} REATIVADA por ${req.userId}.`);
+
+    return res.json({
+      success: true,
+      message: "Organização reativada com sucesso. Acesso ao CRM restabelecido.",
+      result: data
+    });
+  } catch (err: any) {
+    console.error("Erro no endpoint POST /api/admin/organizations/:id/reactivate:", err);
     return res.status(500).json({ error: err.message });
   }
 });

@@ -100,7 +100,32 @@ FOR EACH ROW EXECUTE FUNCTION public.enforce_tenant_record_immutability();
 -- ------------------------------------------------------------------------------
 -- Impede que uma atividade, imóvel ou registro da Organização A aponte para um
 -- cliente, imóvel ou responsável pertencente à Organização B ou inativo.
-CREATE OR REPLACE FUNCTION public.check_cross_tenant_integrity()
+CREATE OR REPLACE FUNCTION public.check_client_integrity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_is_active_member boolean;
+BEGIN
+  IF NEW.organization_id IS NOT NULL AND NEW.assigned_to IS NOT NULL THEN
+    SELECT EXISTS (
+      SELECT 1 FROM public.organization_members
+      WHERE organization_id = NEW.organization_id
+        AND user_id = NEW.assigned_to
+        AND status = 'active'
+    ) INTO v_is_active_member;
+
+    IF v_is_active_member IS NOT TRUE THEN
+      RAISE EXCEPTION 'Violação de tenant: o usuário responsável (assigned_to) não é membro ativo desta organização';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.check_property_integrity()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -110,10 +135,7 @@ DECLARE
   v_ref_org_id uuid;
   v_is_active_member boolean;
 BEGIN
-  -- Se o registro pertencer a uma organização
   IF NEW.organization_id IS NOT NULL THEN
-
-    -- 1. Validação de responsável (assigned_to): deve ser membro ATIVO da mesma organização
     IF NEW.assigned_to IS NOT NULL THEN
       SELECT EXISTS (
         SELECT 1 FROM public.organization_members
@@ -127,34 +149,7 @@ BEGIN
       END IF;
     END IF;
 
-    -- 2. Validação de cliente relacionado (clientId) se a coluna existir na tabela
-    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals', 'history_events') THEN
-      IF NEW."clientId" IS NOT NULL THEN
-        SELECT organization_id INTO v_ref_org_id
-        FROM public.clients
-        WHERE id = NEW."clientId";
-
-        IF v_ref_org_id IS NULL OR v_ref_org_id <> NEW.organization_id THEN
-          RAISE EXCEPTION 'Violação de tenant: o cliente relacionado não pertence a esta organização';
-        END IF;
-      END IF;
-    END IF;
-
-    -- 3. Validação de imóvel relacionado (propertyId) se a coluna existir na tabela
-    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals') THEN
-      IF NEW."propertyId" IS NOT NULL THEN
-        SELECT organization_id INTO v_ref_org_id
-        FROM public.properties
-        WHERE id = NEW."propertyId";
-
-        IF v_ref_org_id IS NULL OR v_ref_org_id <> NEW.organization_id THEN
-          RAISE EXCEPTION 'Violação de tenant: o imóvel relacionado não pertence a esta organização';
-        END IF;
-      END IF;
-    END IF;
-
-    -- 4. Validação em properties: ownerId (cliente proprietário do imóvel)
-    IF TG_TABLE_NAME = 'properties' AND NEW."ownerId" IS NOT NULL THEN
+    IF NEW."ownerId" IS NOT NULL THEN
       SELECT organization_id INTO v_ref_org_id
       FROM public.clients
       WHERE id = NEW."ownerId";
@@ -163,11 +158,66 @@ BEGIN
         RAISE EXCEPTION 'Violação de tenant: o cliente proprietário do imóvel não pertence a esta organização';
       END IF;
     END IF;
-
   ELSE
-    -- Caso legado (organization_id IS NULL):
-    -- Se referenciar clientId ou propertyId, devem ser do mesmo usuário ou também legados
-    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals', 'history_events') AND NEW."clientId" IS NOT NULL THEN
+    IF NEW."ownerId" IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id
+      FROM public.clients
+      WHERE id = NEW."ownerId";
+
+      IF v_ref_org_id IS NOT NULL THEN
+        RAISE EXCEPTION 'Violação de integridade: registro legado não pode referenciar cliente proprietário de uma organização';
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.check_task_activity_integrity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_ref_org_id uuid;
+  v_is_active_member boolean;
+BEGIN
+  IF NEW.organization_id IS NOT NULL THEN
+    IF NEW.assigned_to IS NOT NULL THEN
+      SELECT EXISTS (
+        SELECT 1 FROM public.organization_members
+        WHERE organization_id = NEW.organization_id
+          AND user_id = NEW.assigned_to
+          AND status = 'active'
+      ) INTO v_is_active_member;
+
+      IF v_is_active_member IS NOT TRUE THEN
+        RAISE EXCEPTION 'Violação de tenant: o usuário responsável (assigned_to) não é membro ativo desta organização';
+      END IF;
+    END IF;
+
+    IF NEW."clientId" IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id
+      FROM public.clients
+      WHERE id = NEW."clientId";
+
+      IF v_ref_org_id IS NULL OR v_ref_org_id <> NEW.organization_id THEN
+        RAISE EXCEPTION 'Violação de tenant: o cliente relacionado não pertence a esta organização';
+      END IF;
+    END IF;
+
+    IF NEW."propertyId" IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id
+      FROM public.properties
+      WHERE id = NEW."propertyId";
+
+      IF v_ref_org_id IS NULL OR v_ref_org_id <> NEW.organization_id THEN
+        RAISE EXCEPTION 'Violação de tenant: o imóvel relacionado não pertence a esta organização';
+      END IF;
+    END IF;
+  ELSE
+    IF NEW."clientId" IS NOT NULL THEN
       SELECT organization_id INTO v_ref_org_id
       FROM public.clients
       WHERE id = NEW."clientId";
@@ -177,13 +227,161 @@ BEGIN
       END IF;
     END IF;
 
-    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals') AND NEW."propertyId" IS NOT NULL THEN
+    IF NEW."propertyId" IS NOT NULL THEN
       SELECT organization_id INTO v_ref_org_id
       FROM public.properties
       WHERE id = NEW."propertyId";
 
       IF v_ref_org_id IS NOT NULL THEN
         RAISE EXCEPTION 'Violação de integridade: registro legado não pode referenciar imóvel de uma organização';
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.check_history_event_integrity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_ref_org_id uuid;
+  v_is_active_member boolean;
+BEGIN
+  IF NEW.organization_id IS NOT NULL THEN
+    IF NEW.assigned_to IS NOT NULL THEN
+      SELECT EXISTS (
+        SELECT 1 FROM public.organization_members
+        WHERE organization_id = NEW.organization_id
+          AND user_id = NEW.assigned_to
+          AND status = 'active'
+      ) INTO v_is_active_member;
+
+      IF v_is_active_member IS NOT TRUE THEN
+        RAISE EXCEPTION 'Violação de tenant: o usuário responsável (assigned_to) não é membro ativo desta organização';
+      END IF;
+    END IF;
+
+    IF NEW."clientId" IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id
+      FROM public.clients
+      WHERE id = NEW."clientId";
+
+      IF v_ref_org_id IS NULL OR v_ref_org_id <> NEW.organization_id THEN
+        RAISE EXCEPTION 'Violação de tenant: o cliente relacionado não pertence a esta organização';
+      END IF;
+    END IF;
+  ELSE
+    IF NEW."clientId" IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id
+      FROM public.clients
+      WHERE id = NEW."clientId";
+
+      IF v_ref_org_id IS NOT NULL THEN
+        RAISE EXCEPTION 'Violação de integridade: registro legado não pode referenciar cliente de uma organização';
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+-- Função genérica canônica usando to_jsonb(NEW) para compatibilidade
+CREATE OR REPLACE FUNCTION public.check_cross_tenant_integrity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_rec jsonb;
+  v_org_id uuid;
+  v_assigned_to uuid;
+  v_client_id uuid;
+  v_property_id uuid;
+  v_owner_id uuid;
+  v_ref_org_id uuid;
+  v_is_active_member boolean;
+BEGIN
+  v_rec := to_jsonb(NEW);
+  v_org_id := CASE WHEN v_rec->>'organization_id' IS NOT NULL THEN (v_rec->>'organization_id')::uuid ELSE NULL END;
+  v_assigned_to := CASE WHEN COALESCE(v_rec->>'assigned_to', v_rec->>'assigned_user_id') IS NOT NULL THEN (COALESCE(v_rec->>'assigned_to', v_rec->>'assigned_user_id'))::uuid ELSE NULL END;
+  v_client_id := CASE WHEN COALESCE(v_rec->>'clientId', v_rec->>'client_id') IS NOT NULL THEN (COALESCE(v_rec->>'clientId', v_rec->>'client_id'))::uuid ELSE NULL END;
+  v_property_id := CASE WHEN COALESCE(v_rec->>'propertyId', v_rec->>'property_id') IS NOT NULL THEN (COALESCE(v_rec->>'propertyId', v_rec->>'property_id'))::uuid ELSE NULL END;
+  v_owner_id := CASE WHEN COALESCE(v_rec->>'ownerId', v_rec->>'owner_id') IS NOT NULL THEN (COALESCE(v_rec->>'ownerId', v_rec->>'owner_id'))::uuid ELSE NULL END;
+
+  IF v_org_id IS NOT NULL THEN
+    IF v_assigned_to IS NOT NULL THEN
+      SELECT EXISTS (
+        SELECT 1 FROM public.organization_members
+        WHERE organization_id = v_org_id
+          AND user_id = v_assigned_to
+          AND status = 'active'
+      ) INTO v_is_active_member;
+
+      IF v_is_active_member IS NOT TRUE THEN
+        RAISE EXCEPTION 'Violação de tenant: o usuário responsável (assigned_to) não é membro ativo desta organização';
+      END IF;
+    END IF;
+
+    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals', 'transactions', 'history_events') THEN
+      IF v_client_id IS NOT NULL THEN
+        SELECT organization_id INTO v_ref_org_id
+        FROM public.clients
+        WHERE id = v_client_id;
+
+        IF v_ref_org_id IS NULL OR v_ref_org_id <> v_org_id THEN
+          RAISE EXCEPTION 'Violação de tenant: o cliente relacionado não pertence a esta organização';
+        END IF;
+      END IF;
+    END IF;
+
+    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals', 'transactions') THEN
+      IF v_property_id IS NOT NULL THEN
+        SELECT organization_id INTO v_ref_org_id
+        FROM public.properties
+        WHERE id = v_property_id;
+
+        IF v_ref_org_id IS NULL OR v_ref_org_id <> v_org_id THEN
+          RAISE EXCEPTION 'Violação de tenant: o imóvel relacionado não pertence a esta organização';
+        END IF;
+      END IF;
+    END IF;
+
+    IF TG_TABLE_NAME = 'properties' THEN
+      IF v_owner_id IS NOT NULL THEN
+        SELECT organization_id INTO v_ref_org_id
+        FROM public.clients
+        WHERE id = v_owner_id;
+
+        IF v_ref_org_id IS NULL OR v_ref_org_id <> v_org_id THEN
+          RAISE EXCEPTION 'Violação de tenant: o cliente proprietário do imóvel não pertence a esta organização';
+        END IF;
+      END IF;
+    END IF;
+
+  ELSE
+    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals', 'transactions', 'history_events') AND v_client_id IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id FROM public.clients WHERE id = v_client_id;
+      IF v_ref_org_id IS NOT NULL THEN
+        RAISE EXCEPTION 'Violação de integridade: registro legado não pode referenciar cliente de uma organização';
+      END IF;
+    END IF;
+
+    IF TG_TABLE_NAME IN ('tasks', 'visits', 'proposals', 'transactions') AND v_property_id IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id FROM public.properties WHERE id = v_property_id;
+      IF v_ref_org_id IS NOT NULL THEN
+        RAISE EXCEPTION 'Violação de integridade: registro legado não pode referenciar imóvel de uma organização';
+      END IF;
+    END IF;
+
+    IF TG_TABLE_NAME = 'properties' AND v_owner_id IS NOT NULL THEN
+      SELECT organization_id INTO v_ref_org_id FROM public.clients WHERE id = v_owner_id;
+      IF v_ref_org_id IS NOT NULL THEN
+        RAISE EXCEPTION 'Violação de integridade: registro legado não pode referenciar cliente proprietário de uma organização';
       END IF;
     END IF;
   END IF;
@@ -198,37 +396,37 @@ REVOKE ALL ON FUNCTION public.check_cross_tenant_integrity() FROM PUBLIC;
 DROP TRIGGER IF EXISTS trg_tenant_integrity_clients ON public.clients;
 CREATE TRIGGER trg_tenant_integrity_clients
 BEFORE INSERT OR UPDATE ON public.clients
-FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+FOR EACH ROW EXECUTE FUNCTION public.check_client_integrity();
 
 DROP TRIGGER IF EXISTS trg_tenant_integrity_properties ON public.properties;
 CREATE TRIGGER trg_tenant_integrity_properties
 BEFORE INSERT OR UPDATE ON public.properties
-FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+FOR EACH ROW EXECUTE FUNCTION public.check_property_integrity();
 
 DROP TRIGGER IF EXISTS trg_tenant_integrity_tasks ON public.tasks;
 CREATE TRIGGER trg_tenant_integrity_tasks
 BEFORE INSERT OR UPDATE ON public.tasks
-FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+FOR EACH ROW EXECUTE FUNCTION public.check_task_activity_integrity();
 
 DROP TRIGGER IF EXISTS trg_tenant_integrity_visits ON public.visits;
 CREATE TRIGGER trg_tenant_integrity_visits
 BEFORE INSERT OR UPDATE ON public.visits
-FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+FOR EACH ROW EXECUTE FUNCTION public.check_task_activity_integrity();
 
 DROP TRIGGER IF EXISTS trg_tenant_integrity_proposals ON public.proposals;
 CREATE TRIGGER trg_tenant_integrity_proposals
 BEFORE INSERT OR UPDATE ON public.proposals
-FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+FOR EACH ROW EXECUTE FUNCTION public.check_task_activity_integrity();
 
 DROP TRIGGER IF EXISTS trg_tenant_integrity_transactions ON public.transactions;
 CREATE TRIGGER trg_tenant_integrity_transactions
 BEFORE INSERT OR UPDATE ON public.transactions
-FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+FOR EACH ROW EXECUTE FUNCTION public.check_task_activity_integrity();
 
 DROP TRIGGER IF EXISTS trg_tenant_integrity_history_events ON public.history_events;
 CREATE TRIGGER trg_tenant_integrity_history_events
 BEFORE INSERT OR UPDATE ON public.history_events
-FOR EACH ROW EXECUTE FUNCTION public.check_cross_tenant_integrity();
+FOR EACH ROW EXECUTE FUNCTION public.check_history_event_integrity();
 
 
 -- ------------------------------------------------------------------------------

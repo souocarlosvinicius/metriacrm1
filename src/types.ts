@@ -251,6 +251,8 @@ export interface PlanLimits {
 
 export { PLAN_LIMITS } from "./config/plans";
 
+export type AccessStatus = "active" | "suspended";
+
 export interface Organization {
   id: string;
   name: string;
@@ -270,6 +272,14 @@ export interface Organization {
   maxMembers: number;
   billingEmail?: string;
   billingDocument?: string;
+  accessStatus?: AccessStatus;
+  access_status?: AccessStatus;
+  suspendedAt?: string;
+  suspended_at?: string;
+  suspensionReason?: string;
+  suspension_reason?: string;
+  suspendedBy?: string;
+  suspended_by?: string;
   createdAt: string;
   updatedAt: string;
 }

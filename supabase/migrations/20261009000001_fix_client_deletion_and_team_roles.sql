@@ -108,7 +108,7 @@ BEGIN
   -- Atualiza o perfil do usuário caso ainda não tenha organização padrão
   UPDATE public.profiles
   SET default_organization_id = COALESCE(default_organization_id, NEW.id),
-      current_role = 'owner'
+      "current_role" = 'owner'
   WHERE id = NEW.owner_id;
 
   RETURN NEW;
@@ -208,7 +208,8 @@ BEGIN
   -- Sincroniza organização padrão e cargo do usuário no perfil
   UPDATE public.profiles
   SET default_organization_id = v_invite.organization_id,
-      current_role = v_invite.role,
+      "current_role" = v_invite.role,
+      "onboardingCompleted" = true,
       onboarding_completed = true
   WHERE id = v_user_id;
 

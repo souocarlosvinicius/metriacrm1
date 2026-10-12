@@ -25,6 +25,7 @@ const TeamView = React.lazy(() => import("./components/TeamView"));
 const UserProfileModal = React.lazy(() => import("./components/UserProfileModal"));
 const OnboardingModal = React.lazy(() => import("./components/OnboardingModal"));
 const LandingPage = React.lazy(() => import("./components/LandingPage"));
+const SuspendedAccountNotice = React.lazy(() => import("./components/SuspendedAccountNotice"));
 
 // Initialize Sentry SDK for real-time frontend exception monitoring
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN || "";
@@ -228,21 +229,49 @@ export function App() {
   const [visits, setVisits] = useState<Visit[]>([]);
   const [dbStatus, setDbStatus] = useState<DBStatus | null>(null);
 
-  // Active Organization and Subscription Plan calculations
+  // Active Organization, List and Subscription Plan calculations
   const [currentOrg, setCurrentOrg] = useState<any>(null);
+  const [userOrganizations, setUserOrganizations] = useState<any[]>([]);
 
   const fetchCurrentOrg = async (orgId: string | undefined) => {
     try {
       const res = await apiFetch("/api/organizations");
       if (res.ok) {
         const orgs = await res.json();
-        const activeOrg = orgs.find((o: any) => o.id === orgId) || orgs[0];
-        if (activeOrg) {
-          setCurrentOrg(activeOrg);
+        if (Array.isArray(orgs)) {
+          setUserOrganizations(orgs);
+          const activeOrg = orgs.find((o: any) => o.id === orgId) || orgs[0];
+          if (activeOrg) {
+            setCurrentOrg(activeOrg);
+          }
         }
       }
     } catch (err) {
       console.error("Erro ao carregar organização ativa em App.tsx:", err);
+    }
+  };
+
+  const handleSelectOrganization = async (newOrgId: string) => {
+    const targetOrg = userOrganizations.find((o) => o.id === newOrgId);
+    if (targetOrg) {
+      setCurrentOrg(targetOrg);
+      if (currentUser) {
+        const updatedUser = {
+          ...currentUser,
+          defaultOrganizationId: newOrgId
+        };
+        setCurrentUser(updatedUser);
+        saveUserSession(updatedUser);
+      }
+      try {
+        await apiFetch("/api/auth/me", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ defaultOrganizationId: newOrgId })
+        });
+      } catch (e) {
+        console.warn("Aviso ao sincronizar defaultOrganizationId no perfil:", e);
+      }
     }
   };
 
@@ -1361,20 +1390,41 @@ export function App() {
           </div>
         )}
 
-        <React.Suspense fallback={
-          <div className="flex items-center justify-center min-h-[350px]">
-            <div className="w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin"></div>
-          </div>
-        }>
-          <AnimatePresence mode="wait">
-          {activeTab === "dashboard" && (
-            <motion.div
-              key="dashboard"
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
-              transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-            >
+        {/* AVISO DE CONTA SUSPENSA POR PENDÊNCIA FINANCEIRA */}
+        {currentOrg && (currentOrg.accessStatus === "suspended" || currentOrg.access_status === "suspended") && activeTab !== "settings" ? (
+          <React.Suspense fallback={<div className="p-8 text-center"><div className="w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin mx-auto"></div></div>}>
+            <SuspendedAccountNotice
+              currentOrg={currentOrg}
+              organizations={userOrganizations}
+              onSelectOrganization={handleSelectOrganization}
+              onNavigateToPlans={() => setActiveTab("settings")}
+              onLogout={async () => {
+                try {
+                  await apiFetch("/api/auth/logout", { method: "POST" });
+                } catch (err) {
+                  console.error("Erro ao realizar logout:", err);
+                }
+                clearUserSession();
+                setCurrentUser(null);
+                setShowAuth(false);
+              }}
+            />
+          </React.Suspense>
+        ) : (
+          <React.Suspense fallback={
+            <div className="flex items-center justify-center min-h-[350px]">
+              <div className="w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          }>
+            <AnimatePresence mode="wait">
+            {activeTab === "dashboard" && (
+              <motion.div
+                key="dashboard"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+              >
               <DashboardView
                 properties={properties}
                 clients={clients}
@@ -1573,6 +1623,7 @@ export function App() {
           )}
         </AnimatePresence>
         </React.Suspense>
+        )}
       </main>
 
       {/* Elegant Beta Footer */}

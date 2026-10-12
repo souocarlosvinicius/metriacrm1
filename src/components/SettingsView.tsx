@@ -29,10 +29,12 @@ import {
   X,
   ExternalLink,
   Database,
-  Bell,
   Download,
-  FileJson
+  FileJson,
+  ShieldCheck,
+  ShieldAlert
 } from "lucide-react";
+import AdminSuspensionManager from "./AdminSuspensionManager";
 
 interface SettingsViewProps {
   currentUser: User;
@@ -87,7 +89,7 @@ export default function SettingsView({
   tasks = []
 }: SettingsViewProps) {
   // Navigation tabs for the settings panel
-  const [activeSubTab, setActiveSubTab] = useState<"corretor" | "preferencias" | "mensagens" | "lembretes" | "conta" | "planos" | "termos" | "suporte">("corretor");
+  const [activeSubTab, setActiveSubTab] = useState<"corretor" | "preferencias" | "mensagens" | "lembretes" | "conta" | "planos" | "termos" | "suporte" | "admin">("corretor");
 
   // 1. Broker states
   const [name, setName] = useState(currentUser.name || "");
@@ -167,6 +169,24 @@ export default function SettingsView({
   const [isPlanLoading, setIsPlanLoading] = useState(false);
   const [planSuccessMsg, setPlanSuccessMsg] = useState<string | null>(null);
   const [planErrorMsg, setPlanErrorMsg] = useState<string | null>(null);
+
+  // Metria Internal Admin State
+  const [isInternalAdmin, setIsInternalAdmin] = useState(false);
+
+  React.useEffect(() => {
+    const checkAdmin = async () => {
+      try {
+        const res = await apiFetch("/api/admin/check-authority");
+        if (res.ok) {
+          const data = await res.json();
+          setIsInternalAdmin(Boolean(data.isInternalAdmin));
+        }
+      } catch (err) {
+        setIsInternalAdmin(false);
+      }
+    };
+    checkAdmin();
+  }, []);
 
   const fetchOrgSubscription = async () => {
     const orgId = currentUser.defaultOrganizationId;
@@ -689,6 +709,25 @@ export default function SettingsView({
             <HelpCircle className="w-4 h-4" />
             Suporte & Contato
           </button>
+
+          {/* ABA EXCLUSIVA DO ADMINISTRADOR INTERNO DA METRIA */}
+          {isInternalAdmin && (
+            <>
+              <div className="border-t border-primary/20 my-2"></div>
+              <button
+                type="button"
+                onClick={() => setActiveSubTab("admin")}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition-all text-left cursor-pointer ${
+                  activeSubTab === "admin"
+                    ? "bg-primary text-white shadow-md shadow-primary/10"
+                    : "text-primary hover:bg-primary/10"
+                }`}
+              >
+                <ShieldCheck className="w-4 h-4" />
+                Administração Metria
+              </button>
+            </>
+          )}
 
           <div className="border-t border-outline-variant/30 my-4"></div>
 
@@ -2094,8 +2133,20 @@ export default function SettingsView({
               </div>
             )}
 
+            {/* SUB-TAB: ADMINISTRAÇÃO METRIA (EXCLUSIVO ADMINISTRADOR INTERNO) */}
+            {activeSubTab === "admin" && isInternalAdmin && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <AdminSuspensionManager
+                  currentOrgId={currentUser.defaultOrganizationId}
+                  onStatusChanged={() => {
+                    fetchOrgSubscription();
+                  }}
+                />
+              </div>
+            )}
+
             {/* Bottom Form Actions */}
-            {!["planos", "termos", "suporte"].includes(activeSubTab) && (
+            {!["planos", "termos", "suporte", "admin"].includes(activeSubTab) && (
               <div className="border-t border-outline-variant/20 pt-5 flex justify-end gap-3">
                 <button
                   type="submit"

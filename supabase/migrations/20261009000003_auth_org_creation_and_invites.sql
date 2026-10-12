@@ -208,9 +208,32 @@ BEGIN
   UPDATE public.profiles
   SET default_organization_id = v_org_id,
       account_type = COALESCE(p_account_type, 'agency'),
-      current_role = 'owner',
+      "current_role" = 'owner',
+      "onboardingCompleted" = true,
       onboarding_completed = true
   WHERE id = v_user_id;
+
+  IF NOT FOUND THEN
+    INSERT INTO public.profiles (
+      id,
+      name,
+      email,
+      default_organization_id,
+      account_type,
+      "current_role",
+      "onboardingCompleted",
+      onboarding_completed
+    ) VALUES (
+      v_user_id,
+      COALESCE(v_user_name, 'Proprietário'),
+      COALESCE(v_user_email, ''),
+      v_org_id,
+      COALESCE(p_account_type, 'agency'),
+      'owner',
+      true,
+      true
+    );
+  END IF;
 
   -- 8. Retorno do objeto estruturado
   RETURN json_build_object(
@@ -525,7 +548,8 @@ BEGIN
   -- 11. Atualização do perfil do usuário com a organização e cargo ativos
   UPDATE public.profiles
   SET default_organization_id = v_invite.organization_id,
-      current_role = v_invite.role,
+      "current_role" = v_invite.role,
+      "onboardingCompleted" = true,
       onboarding_completed = true
   WHERE id = v_user_id;
 

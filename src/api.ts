@@ -725,14 +725,23 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         .eq("user_id", userId)
         .eq("status", "active")
         .maybeSingle();
-      return data?.role || null;
+      if (data?.role) return data.role;
+
+      const { data: org } = await supabase
+        .from("organizations")
+        .select("owner_id")
+        .eq("id", orgId)
+        .maybeSingle();
+      if (org && org.owner_id === userId) return "owner";
+
+      return null;
     };
 
     const checkOrgAccess = async (orgId: string, userId: string): Promise<{ authorized: boolean; role: string | null; error?: string; code?: string }> => {
       // 1. Valida se a organização está suspensa
       const { data: org, error: orgErr } = await supabase
         .from("organizations")
-        .select("access_status, suspension_reason, suspended_at")
+        .select("access_status, suspension_reason, suspended_at, subscription_status, subscription_expires_at, plan")
         .eq("id", orgId)
         .maybeSingle();
 
@@ -754,7 +763,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         };
       }
 
-      // 2. Valida membership ativa
+      // 2. Valida membership ativa ou propriedade (default_organization_id sozinho não comprova)
       const role = await getOrgMemberRole(orgId, userId);
       if (!role) {
         return {
@@ -868,14 +877,29 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       if (activeOrgId) {
         const { data: org } = await supabase
           .from("organizations")
-          .select("plan")
+          .select("plan, access_status, subscription_status, subscription_expires_at")
           .eq("id", activeOrgId)
           .maybeSingle();
+
+        if (org && org.access_status === "suspended") {
+          return mockResponse({
+            error: "Seu acesso está temporariamente suspenso por pendência financeira. Seus dados estão preservados. Entre em contato com a Metria para regularizar."
+          }, 403);
+        }
+
+        if (org?.subscription_expires_at) {
+          const expDate = new Date(org.subscription_expires_at).getTime();
+          if (!isNaN(expDate) && expDate < Date.now()) {
+            return mockResponse({
+              error: "Acesso negado: a assinatura da organização expirou. Regularize sua assinatura para utilizar a Inteligência Artificial."
+            }, 403);
+          }
+        }
 
         const plan = org?.plan || "beta";
         if (plan === "beta" || plan === "start") {
           return mockResponse({
-            error: "Funcionalidade bloqueada. O uso da Inteligência Artificial (Gemini AI) está disponível apenas nos planos Pro, Max e PRO MAX. Faça o upgrade nas Configurações!"
+            error: "Funcionalidade bloqueada. O uso da Inteligência Artificial (Gemini AI) está disponível apenas nos planos Pro, Max e PRO MAX. Solicite a liberação à equipe Metria!"
           }, 403);
         }
       }
@@ -2076,10 +2100,17 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
           }
         }
 
-        // Validação de cota de armazenamento do tenant
+        // Validação de cota e validade da assinatura do tenant
         const targetTenantId = activeOrgId || session.user.id;
-        const { data: org } = await supabase.from("organizations").select("plan").eq("id", targetTenantId).maybeSingle();
+        const { data: org } = await supabase.from("organizations").select("plan, subscription_expires_at").eq("id", targetTenantId).maybeSingle();
         const plan = org?.plan || "beta";
+
+        if (org?.subscription_expires_at) {
+          const expDate = new Date(org.subscription_expires_at).getTime();
+          if (!isNaN(expDate) && expDate < Date.now() && plan !== "beta") {
+            return mockResponse({ error: "Acesso negado: a assinatura da organização expirou. Regularize a assinatura para realizar uploads." }, 403);
+          }
+        }
 
         const quotaCheck = checkTenantQuota(activeOrgId, plan, buffer.length);
         if (!quotaCheck.allowed) {

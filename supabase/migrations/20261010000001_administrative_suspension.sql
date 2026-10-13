@@ -491,10 +491,10 @@ $$;
 
 -- 6.3 Convites bloqueados se organização estiver suspensa
 CREATE OR REPLACE FUNCTION public.create_organization_invite_v2(
-  p_organization_id uuid,
+  p_org_id uuid,
   p_invited_email text,
-  p_invited_name text,
-  p_role text
+  p_invited_name text DEFAULT NULL,
+  p_role text DEFAULT 'broker'
 )
 RETURNS json
 LANGUAGE plpgsql
@@ -510,6 +510,7 @@ DECLARE
   v_max_members integer;
   v_clean_email text;
   v_org_access_status text;
+  v_expires_at timestamp with time zone;
 BEGIN
   v_user_id := auth.uid();
   IF v_user_id IS NULL THEN
@@ -524,13 +525,13 @@ BEGIN
   -- Validação de suspensão da organização
   SELECT access_status INTO v_org_access_status
   FROM public.organizations
-  WHERE id = p_organization_id;
+  WHERE id = p_org_id;
 
   IF v_org_access_status = 'suspended' THEN
     RAISE EXCEPTION 'Acesso negado: a organização está temporariamente suspensa por pendência financeira';
   END IF;
 
-  v_user_role := public.get_user_role(p_organization_id);
+  v_user_role := public.get_user_role(p_org_id);
   IF v_user_role NOT IN ('owner', 'admin') THEN
     RAISE EXCEPTION 'Access denied: only organization owner or admin can invite members';
   END IF;
@@ -545,11 +546,11 @@ BEGIN
 
   SELECT count(*) INTO v_current_count
   FROM public.organization_members
-  WHERE organization_id = p_organization_id AND status = 'active';
+  WHERE organization_id = p_org_id AND status = 'active';
 
   SELECT max_members INTO v_max_members
   FROM public.organizations
-  WHERE id = p_organization_id;
+  WHERE id = p_org_id;
 
   IF v_max_members IS NOT NULL AND v_current_count >= v_max_members THEN
     RAISE EXCEPTION 'Limite de membros do plano atingido (% de %). Faça upgrade do plano para convidar mais membros.', v_current_count, v_max_members;
@@ -558,7 +559,7 @@ BEGIN
   IF EXISTS (
     SELECT 1 FROM public.organization_members om
     JOIN auth.users u ON u.id = om.user_id
-    WHERE om.organization_id = p_organization_id
+    WHERE om.organization_id = p_org_id
       AND lower(u.email) = v_clean_email
       AND om.status = 'active'
   ) THEN
@@ -566,6 +567,7 @@ BEGIN
   END IF;
 
   v_token := encode(gen_random_bytes(32), 'hex');
+  v_expires_at := timezone('utc'::text, now()) + interval '7 days';
 
   INSERT INTO public.organization_invites (
     organization_id,
@@ -577,24 +579,26 @@ BEGIN
     invited_by,
     expires_at
   ) VALUES (
-    p_organization_id,
+    p_org_id,
     v_clean_email,
     nullif(trim(p_invited_name), ''),
     p_role,
     v_token,
     'pending',
     v_user_id,
-    timezone('utc'::text, now()) + interval '7 days'
+    v_expires_at
   ) RETURNING id INTO v_invite_id;
 
   RETURN json_build_object(
     'id', v_invite_id,
-    'organization_id', p_organization_id,
-    'invited_email', v_clean_email,
-    'invited_name', trim(p_invited_name),
+    'organizationId', p_org_id,
+    'invitedEmail', v_clean_email,
+    'invitedName', trim(p_invited_name),
     'role', p_role,
     'token', v_token,
-    'status', 'pending'
+    'status', 'pending',
+    'expiresAt', v_expires_at
   );
 END;
 $$;
+

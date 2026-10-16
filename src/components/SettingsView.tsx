@@ -33,7 +33,8 @@ import {
   FileJson,
   ShieldCheck,
   ShieldAlert,
-  Bell
+  Bell,
+  History as HistoryIcon
 } from "lucide-react";
 import AdminSuspensionManager from "./AdminSuspensionManager";
 
@@ -170,6 +171,11 @@ export default function SettingsView({
   const [isPlanLoading, setIsPlanLoading] = useState(false);
   const [planSuccessMsg, setPlanSuccessMsg] = useState<string | null>(null);
   const [planErrorMsg, setPlanErrorMsg] = useState<string | null>(null);
+  const [planChangedAt, setPlanChangedAt] = useState<string | null>(null);
+  const [nextPlanChangeAt, setNextPlanChangeAt] = useState<string | null>(null);
+  const [isOrgOwner, setIsOrgOwner] = useState(true);
+  const [pendingConfirmPlan, setPendingConfirmPlan] = useState<"beta" | "start" | "pro" | "max" | "pro_max" | null>(null);
+  const [planHistory, setPlanHistory] = useState<any[]>([]);
 
   // Metria Internal Admin State
   const [isInternalAdmin, setIsInternalAdmin] = useState(false);
@@ -204,6 +210,9 @@ export default function SettingsView({
         if (activeOrg) {
           setOrgPlan(activeOrg.plan || "beta");
           setOrgName(activeOrg.name || "");
+          setPlanChangedAt(activeOrg.planChangedAt || activeOrg.plan_changed_at || null);
+          setNextPlanChangeAt(activeOrg.nextPlanChangeAt || activeOrg.next_plan_change_at || null);
+          setIsOrgOwner(activeOrg.userRole === "owner" || activeOrg.ownerId === currentUser.id);
         }
       }
 
@@ -236,6 +245,17 @@ export default function SettingsView({
         properties: propertiesCount,
         members: membersCount
       });
+
+      // 3. Fetch plan change history
+      try {
+        const histRes = await apiFetch(`/api/organizations/${orgId}/plan-changes`);
+        if (histRes.ok) {
+          const histData = await histRes.json();
+          if (Array.isArray(histData)) setPlanHistory(histData);
+        }
+      } catch (e) {
+        console.warn("Não foi possível carregar histórico de mudanças de plano:", e);
+      }
     } catch (err) {
       console.error("Erro ao carregar dados do plano:", err);
     } finally {
@@ -243,7 +263,72 @@ export default function SettingsView({
     }
   };
 
-  const handleSelectPlan = async (targetPlan: "beta" | "start" | "pro" | "max" | "pro_max") => {
+  const is30DayBlockActive = React.useMemo(() => {
+    if (!nextPlanChangeAt) return false;
+    const nextDate = new Date(nextPlanChangeAt);
+    return !isNaN(nextDate.getTime()) && nextDate.getTime() > Date.now();
+  }, [nextPlanChangeAt]);
+
+  const renderPlanActionButton = (planKey: "beta" | "start" | "pro" | "max" | "pro_max", planName: string) => {
+    const isCurrent = orgPlan === planKey;
+    if (isCurrent) {
+      return (
+        <button
+          type="button"
+          disabled
+          className="w-full mt-5 py-2.5 text-xs font-bold rounded-xl bg-emerald-100 text-emerald-800 border border-emerald-200 cursor-default"
+        >
+          Plano Ativo
+        </button>
+      );
+    }
+
+    if (is30DayBlockActive) {
+      const formattedNext = nextPlanChangeAt ? new Date(nextPlanChangeAt).toLocaleString("pt-BR") : "";
+      return (
+        <button
+          type="button"
+          disabled
+          title={`Mudança bloqueada até ${formattedNext} (intervalo mínimo de 30 dias)`}
+          className="w-full mt-5 py-2.5 text-xs font-bold rounded-xl bg-surface-container-high text-on-surface-variant/60 border border-outline-variant/30 cursor-not-allowed opacity-75"
+        >
+          Bloqueado (30 dias)
+        </button>
+      );
+    }
+
+    if (!isOrgOwner) {
+      return (
+        <button
+          type="button"
+          disabled
+          title="Apenas o titular / proprietário legítimo da conta pode confirmar mudanças de plano."
+          className="w-full mt-5 py-2.5 text-xs font-bold rounded-xl bg-surface-container-high text-on-surface-variant/60 border border-outline-variant/30 cursor-not-allowed opacity-75"
+        >
+          Apenas Titular
+        </button>
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        disabled={isPlanLoading}
+        onClick={() => handleSelectPlan(planKey)}
+        className={`w-full mt-5 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+          planKey === "pro"
+            ? "bg-primary hover:bg-primary/95 text-white shadow-sm"
+            : planKey === "pro_max"
+            ? "bg-amber-400 hover:bg-amber-500 text-slate-950 font-extrabold"
+            : "bg-surface-container-high hover:bg-surface-container-highest text-on-surface"
+        }`}
+      >
+        Mudar para {planName}
+      </button>
+    );
+  };
+
+  const handleSelectPlan = (targetPlan: "beta" | "start" | "pro" | "max" | "pro_max") => {
     const orgId = currentUser.defaultOrganizationId;
     if (!orgId) {
       setPlanErrorMsg("Você precisa de uma organização ativa para alterar o plano.");
@@ -253,73 +338,94 @@ export default function SettingsView({
     setPlanErrorMsg(null);
     setPlanSuccessMsg(null);
 
-    // Downgrade rules validation
+    // 1. Selecionar o plano já ativo não é uma mudança
+    if (targetPlan === orgPlan) {
+      setPlanSuccessMsg(`O plano ${targetPlan.toUpperCase()} já está ativo nesta organização. Nenhuma alteração necessária.`);
+      return;
+    }
+
+    // 2. Apenas o proprietário legítimo pode alterar
+    if (!isOrgOwner) {
+      setPlanErrorMsg("Acesso negado: apenas o proprietário/titular da organização pode alterar o plano.");
+      return;
+    }
+
+    // 3. Bloqueio de 30 dias
+    if (is30DayBlockActive && nextPlanChangeAt) {
+      const nextDateFormatted = new Date(nextPlanChangeAt).toLocaleString("pt-BR");
+      setPlanErrorMsg(`Mudança de plano bloqueada: o intervalo mínimo de 30 dias ainda não foi atingido. Próxima alteração disponível em ${nextDateFormatted}.`);
+      return;
+    }
+
+    // 4. Validação de capacidade atual vs plano de destino (downgrade)
     if (targetPlan === "beta") {
       if (usageStats.clients > 10) {
-        setPlanErrorMsg(`Não é possível realizar o downgrade para o plano Beta pois sua organização possui ${usageStats.clients} clientes ativos (limite do Beta: 10). Exclua ou arquive pelo menos ${usageStats.clients - 10} clientes para poder alterar o plano.`);
+        setPlanErrorMsg(`Não é possível realizar o downgrade para o plano Beta pois sua organização possui ${usageStats.clients} clientes ativos (limite do Beta: 10). Exclua ou arquive pelo menos ${usageStats.clients - 10} clientes antes de alterar.`);
         return;
       }
       if (usageStats.properties > 5) {
-        setPlanErrorMsg(`Não é possível realizar o downgrade para o plano Beta pois sua organização possui ${usageStats.properties} imóveis cadastrados (limite do Beta: 5). Remova pelo menos ${usageStats.properties - 5} imóveis para poder alterar o plano.`);
+        setPlanErrorMsg(`Não é possível realizar o downgrade para o plano Beta pois sua organização possui ${usageStats.properties} imóveis cadastrados (limite do Beta: 5). Remova pelo menos ${usageStats.properties - 5} imóveis antes de alterar.`);
         return;
       }
       if (usageStats.members > 1) {
-        setPlanErrorMsg(`Não é possível realizar o downgrade para o plano Beta pois sua organização possui equipe com ${usageStats.members} corretores (limite do Beta: 1 usuário). Desative ou remova os membros da equipe antes de fazer o downgrade.`);
+        setPlanErrorMsg(`Não é possível realizar o downgrade para o plano Beta pois sua organização possui ${usageStats.members} membros ativos na equipe (limite do Beta: 1 usuário). Desative membros excedentes antes de efetuar o downgrade.`);
         return;
       }
     }
 
     if (targetPlan === "start" || targetPlan === "pro") {
       if (usageStats.members > 1) {
-        setPlanErrorMsg(`Não é possível alterar para o plano ${targetPlan === "start" ? "Start" : "Pro"} pois sua organização possui equipe com ${usageStats.members} corretores. Estes planos são de usuário único (limite: 1 usuário). Remova ou desative os membros da equipe antes de prosseguir.`);
+        setPlanErrorMsg(`Não é possível alterar para o plano ${targetPlan === "start" ? "Start" : "Pro"} pois sua organização possui ${usageStats.members} membros ativos na equipe. Estes planos permitem apenas 1 usuário. Desative membros excedentes antes de prosseguir.`);
         return;
       }
     }
 
     if (targetPlan === "max") {
       if (usageStats.members > 5) {
-        setPlanErrorMsg(`Não é possível alterar para o plano Max pois sua organização possui ${usageStats.members} corretores (limite do Max: 5). Remova pelo menos ${usageStats.members - 5} corretores antes de prosseguir.`);
+        setPlanErrorMsg(`Não é possível alterar para o plano Max pois sua organização possui ${usageStats.members} corretores na equipe (limite do Max: 5). Desative membros excedentes antes de efetuar a troca.`);
         return;
       }
     }
 
-    if (targetPlan === "pro_max") {
-      if (usageStats.members > 30) {
-        setPlanErrorMsg(`Não é possível alterar para o plano PRO MAX pois sua organização possui ${usageStats.members} corretores (limite do PRO MAX: 30). Remova pelo menos ${usageStats.members - 30} corretores antes de prosseguir.`);
-        return;
-      }
-    }
+    // Abre diálogo de confirmação com texto e aviso exigidos
+    setPendingConfirmPlan(targetPlan);
+  };
+
+  const handleConfirmPlanChange = async () => {
+    if (!pendingConfirmPlan) return;
+    const targetPlan = pendingConfirmPlan;
+    const orgId = currentUser.defaultOrganizationId;
+    if (!orgId) return;
 
     setIsPlanLoading(true);
+    setPlanErrorMsg(null);
+    setPlanSuccessMsg(null);
+
     try {
-      const res = await apiFetch(`/api/organizations/${orgId}/plan`, {
-        method: "PUT",
+      const res = await apiFetch(`/api/organizations/${orgId}/change-plan`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: targetPlan })
+        body: JSON.stringify({
+          plan: targetPlan,
+          idempotencyKey: typeof crypto !== "undefined" && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `idemp-${Date.now()}`
+        })
       });
 
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        throw new Error(data.error || "Erro ao atualizar plano.");
+        throw new Error(data.error || "Erro ao alterar plano.");
       }
 
-      // Verificação do plano retornado pela API para garantir sincronização do estado local
-      const confirmedPlan = data.plan || targetPlan;
-      if (data.plan && data.plan !== targetPlan) {
-        console.warn(`[Plan Sync Check] O plano retornado pela API (${data.plan}) diverge do solicitado (${targetPlan}). Sincronizando com o plano retornado pelo servidor.`);
-      }
-
-      // 1. Atualizar o estado do plano no componente local
+      const confirmedPlan = data.new_plan || data.plan || targetPlan;
       setOrgPlan(confirmedPlan);
+      setPlanChangedAt(data.plan_changed_at || new Date().toISOString());
+      setNextPlanChangeAt(data.next_plan_change_at || null);
+      setPendingConfirmPlan(null);
 
-      // 2. Recarregar os dados da assinatura e limites da organização a partir do servidor
       await fetchOrgSubscription();
 
-      // 3. Disparar o evento global de sincronização do plano para todos os ouvintes
       window.dispatchEvent(new CustomEvent("organization-plan-changed", { detail: { orgId, plan: confirmedPlan } }));
-
-      // 4. Notificar a atualização do usuário para recarregar contextos
       onUpdateSuccess({
         ...currentUser,
       });
@@ -332,9 +438,9 @@ export default function SettingsView({
         pro_max: "Plano PRO MAX"
       };
 
-      setPlanSuccessMsg(`Plano alterado com sucesso para ${planNameMap[confirmedPlan] || confirmedPlan}! Os limites e permissões da sua conta foram sincronizados com sucesso.`);
+      setPlanSuccessMsg(`Plano alterado com sucesso para ${planNameMap[confirmedPlan] || confirmedPlan}! A cobrança será tratada manualmente pela Metria. Nova alteração disponível em 30 dias.`);
     } catch (err: any) {
-      setPlanErrorMsg(err.message || "Erro de rede ao atualizar o plano.");
+      setPlanErrorMsg(err.message || "Erro de rede ao alterar o plano.");
     } finally {
       setIsPlanLoading(false);
     }
@@ -1716,6 +1822,42 @@ export default function SettingsView({
                     </div>
                   </div>
 
+                  {/* CONTROLE DE INTERVALO DE 30 DIAS E DATAS DE MUDANÇA */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 bg-surface rounded-2xl border border-outline-variant/20">
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">Última Alteração Efetiva</span>
+                      <span className="text-xs font-mono font-bold text-on-surface block">
+                        {planChangedAt ? new Date(planChangedAt).toLocaleString("pt-BR") : "Nenhuma alteração registrada (Plano inicial Beta)"}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">Próxima Alteração Permitida</span>
+                      {is30DayBlockActive && nextPlanChangeAt ? (
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                          <span className="text-xs font-bold text-amber-700 dark:text-amber-400">
+                            Bloqueado até {new Date(nextPlanChangeAt).toLocaleString("pt-BR")} (prazo de 30 dias)
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
+                          <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400">
+                            Disponível para alteração imediata
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {!isOrgOwner && (
+                    <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-xl flex items-center gap-2">
+                      <Info className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>Apenas o titular / proprietário legítimo da conta tem permissão para confirmar alterações de plano.</span>
+                    </div>
+                  )}
+
                   <div>
                     <h5 className="text-xs font-bold text-on-surface mb-3 uppercase tracking-wide">Consumo de Recursos em Tempo Real</h5>
                     
@@ -1823,18 +1965,7 @@ export default function SettingsView({
                       </div>
                     </div>
                     
-                    <button
-                      type="button"
-                      disabled={isPlanLoading}
-                      onClick={() => handleSelectPlan("beta")}
-                      className={`w-full mt-5 py-2 text-xs font-bold rounded-xl transition-all ${
-                        orgPlan === "beta" 
-                          ? "bg-emerald-100 text-emerald-800 border border-emerald-200 cursor-default" 
-                          : "bg-surface-container-high hover:bg-surface-container-highest text-on-surface cursor-pointer"
-                      }`}
-                    >
-                      {orgPlan === "beta" ? "Plano Ativo" : "Ativar Plano"}
-                    </button>
+                    {renderPlanActionButton("beta", "Beta")}
                   </div>
 
                   {/* Plan 2: Start */}
@@ -1858,18 +1989,7 @@ export default function SettingsView({
                       </div>
                     </div>
                     
-                    <button
-                      type="button"
-                      disabled={isPlanLoading}
-                      onClick={() => handleSelectPlan("start")}
-                      className={`w-full mt-5 py-2 text-xs font-bold rounded-xl transition-all ${
-                        orgPlan === "start" 
-                          ? "bg-emerald-100 text-emerald-800 border border-emerald-200 cursor-default" 
-                          : "bg-surface-container-high hover:bg-surface-container-highest text-on-surface cursor-pointer"
-                      }`}
-                    >
-                      {orgPlan === "start" ? "Plano Ativo" : "Ativar Plano"}
-                    </button>
+                    {renderPlanActionButton("start", "Start")}
                   </div>
 
                   {/* Plan 3: Pro */}
@@ -1896,18 +2016,7 @@ export default function SettingsView({
                       </div>
                     </div>
                     
-                    <button
-                      type="button"
-                      disabled={isPlanLoading}
-                      onClick={() => handleSelectPlan("pro")}
-                      className={`w-full mt-5 py-2 text-xs font-bold rounded-xl transition-all ${
-                        orgPlan === "pro" 
-                          ? "bg-emerald-100 text-emerald-800 border border-emerald-200 cursor-default" 
-                          : "bg-primary hover:bg-primary/95 text-white shadow-sm cursor-pointer"
-                      }`}
-                    >
-                      {orgPlan === "pro" ? "Plano Ativo" : "Ativar Plano"}
-                    </button>
+                    {renderPlanActionButton("pro", "Pro")}
                   </div>
 
                   {/* Plan 4: Max */}
@@ -1931,18 +2040,7 @@ export default function SettingsView({
                       </div>
                     </div>
                     
-                    <button
-                      type="button"
-                      disabled={isPlanLoading}
-                      onClick={() => handleSelectPlan("max")}
-                      className={`w-full mt-5 py-2 text-xs font-bold rounded-xl transition-all ${
-                        orgPlan === "max" 
-                          ? "bg-emerald-100 text-emerald-800 border border-emerald-200 cursor-default" 
-                          : "bg-surface-container-high hover:bg-surface-container-highest text-on-surface cursor-pointer"
-                      }`}
-                    >
-                      {orgPlan === "max" ? "Plano Ativo" : "Ativar Plano"}
-                    </button>
+                    {renderPlanActionButton("max", "Max")}
                   </div>
 
                   {/* Plan 5: PRO MAX */}
@@ -1969,20 +2067,119 @@ export default function SettingsView({
                       </div>
                     </div>
                     
-                    <button
-                      type="button"
-                      disabled={isPlanLoading}
-                      onClick={() => handleSelectPlan("pro_max")}
-                      className={`w-full mt-5 py-2 text-xs font-bold rounded-xl transition-all ${
-                        orgPlan === "pro_max" 
-                          ? "bg-emerald-500 text-white cursor-default" 
-                          : "bg-amber-400 hover:bg-amber-500 text-slate-950 cursor-pointer"
-                      }`}
-                    >
-                      {orgPlan === "pro_max" ? "Plano Ativo" : "Ativar Plano"}
-                    </button>
+                    {renderPlanActionButton("pro_max", "PRO MAX")}
                   </div>
                 </div>
+
+                {/* MODAL DE CONFIRMAÇÃO DE MUDANÇA DE PLANO PELO TITULAR */}
+                {pendingConfirmPlan && (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
+                    <div className="bg-surface rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl border border-outline-variant/30 space-y-5 text-left">
+                      <div className="flex items-center gap-3 border-b border-outline-variant/20 pb-4">
+                        <div className="p-3 bg-primary/10 text-primary rounded-2xl">
+                          <CreditCard className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-black uppercase tracking-wider text-primary">Confirmação de Assinatura</span>
+                          <h3 className="font-display font-extrabold text-lg text-on-surface">Confirmar Mudança de Plano</h3>
+                        </div>
+                      </div>
+
+                      <div className="bg-surface-container-low rounded-2xl p-4 border border-outline-variant/20 space-y-3">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-on-surface-variant font-medium">Plano Atual:</span>
+                          <span className="font-bold text-on-surface uppercase">{orgPlan}</span>
+                        </div>
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-on-surface-variant font-medium">Novo Plano Solicitado:</span>
+                          <span className="font-bold text-primary text-sm uppercase">{pendingConfirmPlan}</span>
+                        </div>
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-on-surface-variant font-medium">Valor Mensal Vigente:</span>
+                          <span className="font-bold text-on-surface">
+                            {pendingConfirmPlan === "beta" && "R$ 0,00/mês"}
+                            {pendingConfirmPlan === "start" && "R$ 39,90/mês"}
+                            {pendingConfirmPlan === "pro" && "R$ 79,90/mês"}
+                            {pendingConfirmPlan === "max" && "R$ 149,90/mês"}
+                            {pendingConfirmPlan === "pro_max" && "Consulte"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-on-surface-variant font-medium">Capacidade de Equipe:</span>
+                          <span className="font-bold text-on-surface">
+                            {pendingConfirmPlan === "max" ? "Até 5 usuários" : pendingConfirmPlan === "pro_max" ? "Até 99 usuários" : "1 usuário (individual)"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="p-4 bg-amber-500/10 border border-amber-500/30 text-amber-900 dark:text-amber-300 text-xs rounded-2xl space-y-2">
+                        <div className="flex items-center gap-2 font-bold text-amber-800 dark:text-amber-200">
+                          <Info className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                          <span>Aviso Importante</span>
+                        </div>
+                        <p className="font-semibold leading-relaxed">
+                          “A mudança será aplicada agora. Uma nova alteração ficará disponível em 30 dias. A cobrança será tratada manualmente pela Metria.”
+                        </p>
+                      </div>
+
+                      <div className="flex items-center justify-end gap-3 pt-2">
+                        <button
+                          type="button"
+                          disabled={isPlanLoading}
+                          onClick={() => setPendingConfirmPlan(null)}
+                          className="px-4 py-2.5 rounded-xl border border-outline-variant text-on-surface-variant hover:bg-surface-container text-xs font-bold transition-all cursor-pointer"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isPlanLoading}
+                          onClick={handleConfirmPlanChange}
+                          className="px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/95 text-white text-xs font-extrabold shadow-md transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                        >
+                          {isPlanLoading ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Aplicando Mudança...
+                            </>
+                          ) : (
+                            <>
+                              <Check className="w-4 h-4" />
+                              Confirmar Mudança de Plano
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* HISTÓRICO DE ALTERAÇÕES DE PLANO DA CONTA */}
+                {planHistory.length > 0 && (
+                  <div className="bg-surface-container-low border border-outline-variant/20 rounded-3xl p-6 space-y-4 text-left">
+                    <div className="flex items-center gap-2">
+                      <HistoryIcon className="w-4 h-4 text-primary" />
+                      <h4 className="font-display text-sm font-bold text-on-surface">Histórico de Alterações de Plano</h4>
+                    </div>
+                    <div className="divide-y divide-outline-variant/15 max-h-48 overflow-y-auto">
+                      {planHistory.map((item: any) => (
+                        <div key={item.id} className="py-2.5 flex items-center justify-between text-xs gap-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold uppercase px-2 py-0.5 rounded bg-surface-container text-on-surface text-[10px]">
+                              {item.previous_plan} → {item.new_plan}
+                            </span>
+                            <span className="text-on-surface-variant text-[11px]">
+                              R$ {Number(item.price || 0).toFixed(2).replace(".", ",")} ({item.billing_cycle || "mensal"})
+                            </span>
+                          </div>
+                          <div className="text-right text-[11px] font-mono text-on-surface-variant shrink-0">
+                            {item.changed_at ? new Date(item.changed_at).toLocaleString("pt-BR") : "-"}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

@@ -280,6 +280,10 @@ export interface Organization {
   suspension_reason?: string;
   suspendedBy?: string;
   suspended_by?: string;
+  planChangedAt?: string | null;
+  plan_changed_at?: string | null;
+  nextPlanChangeAt?: string | null;
+  next_plan_change_at?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -312,3 +316,55 @@ export interface OrganizationInvite {
   createdAt?: string;
   acceptedAt?: string;
 }
+
+export interface OrganizationPlanChange {
+  id: string;
+  organizationId: string;
+  organization_id?: string;
+  userId: string;
+  user_id?: string;
+  previousPlan: PlanId;
+  previous_plan?: PlanId;
+  newPlan: PlanId;
+  new_plan?: PlanId;
+  changedAt: string;
+  changed_at?: string;
+  nextAllowedChangeAt: string;
+  next_allowed_change_at?: string;
+  price: number;
+  billingCycle: string;
+  billing_cycle?: string;
+  source: string;
+  idempotencyKey?: string | null;
+  idempotency_key?: string | null;
+  metadata?: Record<string, any>;
+  createdAt?: string;
+  created_at?: string;
+}
+
+export interface ManualCharge {
+  id: string;
+  organizationId: string;
+  organization_id?: string;
+  planChangeId?: string | null;
+  plan_change_id?: string | null;
+  referencePeriod: string;
+  reference_period?: string;
+  amount: number;
+  dueDate: string;
+  due_date?: string;
+  status: "pending" | "paid" | "cancelled";
+  paymentDate?: string | null;
+  payment_date?: string | null;
+  notes?: string | null;
+  reviewedBy?: string | null;
+  reviewed_by?: string | null;
+  createdAt?: string;
+  created_at?: string;
+  updatedAt?: string;
+  updated_at?: string;
+  organizationName?: string;
+  ownerName?: string;
+  ownerEmail?: string;
+}
+

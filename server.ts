@@ -1262,6 +1262,16 @@ app.get("/api/organizations", requireAuth, async (req: any, res: any) => {
         suspension_reason: org.suspension_reason,
         suspendedBy: org.suspended_by,
         suspended_by: org.suspended_by,
+        planChangedAt: org.plan_changed_at,
+        plan_changed_at: org.plan_changed_at,
+        nextPlanChangeAt: org.next_plan_change_at,
+        next_plan_change_at: org.next_plan_change_at,
+        subscriptionStatus: org.subscription_status || "active",
+        subscription_status: org.subscription_status || "active",
+        subscriptionExpiresAt: org.subscription_expires_at,
+        subscription_expires_at: org.subscription_expires_at,
+        maxMembers: org.max_members || 1,
+        max_members: org.max_members || 1,
         userRole: membership?.role,
         userStatus: membership?.status
       };
@@ -1525,6 +1535,292 @@ app.get("/api/admin/organizations/:id/plan-audit", requireAuth, requireMetriaAdm
     }
 
     return res.json(audits || []);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// MUDANÇA DE PLANO PELO TITULAR DA CONTA (COM INTERVALO MÍNIMO DE 30 DIAS)
+app.post("/api/organizations/:id/change-plan", requireAuth, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não está configurado." });
+  }
+
+  const orgId = req.params.id;
+  const { plan, idempotencyKey } = req.body || {};
+  const validPlans = ["beta", "start", "pro", "max", "pro_max"];
+
+  if (!plan || !validPlans.includes(plan)) {
+    return res.status(400).json({ error: `Plano inválido: "${plan}". Escolha entre beta, start, pro, max ou pro_max.`, code: "INVALID_PLAN" });
+  }
+
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    // Valida propriedade e vínculo ativo (não confia em current_role editável do perfil)
+    const { data: member, error: memErr } = await supabaseAdmin
+      .from("organization_members")
+      .select("role, status")
+      .eq("organization_id", orgId)
+      .eq("user_id", req.userId)
+      .single();
+
+    const { data: org, error: orgErr } = await supabaseAdmin
+      .from("organizations")
+      .select("owner_id, access_status, plan")
+      .eq("id", orgId)
+      .single();
+
+    if (orgErr || !org) {
+      return res.status(404).json({ error: "Organização não encontrada.", code: "ORG_NOT_FOUND" });
+    }
+
+    if (org.access_status === "suspended") {
+      return res.status(403).json({ error: "Acesso negado: organização está suspensa administrativamente.", code: "ORG_SUSPENDED" });
+    }
+
+    const isOwner = (member && member.status === "active" && member.role === "owner") || org.owner_id === req.userId;
+    if (!isOwner) {
+      return res.status(403).json({ error: "Acesso negado: apenas o proprietário legítimo com vínculo ativo pode alterar o plano.", code: "OWNER_ONLY" });
+    }
+
+    // Executa a RPC transacional com chave idempotente e identificador do ator
+    const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc("change_organization_plan_by_owner", {
+      p_organization_id: orgId,
+      p_target_plan: plan,
+      p_idempotency_key: idempotencyKey || req.headers["x-idempotency-key"] || null,
+      p_actor_id: req.userId
+    });
+
+    if (rpcErr) {
+      console.warn("[PLAN CHANGE RPC ERROR]", rpcErr.message);
+      return res.status(400).json({
+        error: rpcErr.message,
+        code: "PLAN_CHANGE_REJECTED"
+      });
+    }
+
+    return res.json(rpcResult);
+  } catch (err: any) {
+    console.error("Erro no endpoint POST /api/organizations/:id/change-plan:", err);
+    return res.status(500).json({ error: err.message, code: "INTERNAL_SERVER_ERROR" });
+  }
+});
+
+// HISTÓRICO DE ALTERAÇÕES DE PLANO DA ORGANIZAÇÃO
+app.get("/api/organizations/:id/plan-changes", requireAuth, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não configurado." });
+  }
+  const orgId = req.params.id;
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const isInternalAdmin = isMetriaInternalAdmin(req.userId);
+    if (!isInternalAdmin) {
+      const { data: member } = await supabaseAdmin
+        .from("organization_members")
+        .select("role, status")
+        .eq("organization_id", orgId)
+        .eq("user_id", req.userId)
+        .single();
+
+      if (!member || member.status !== "active" || !["owner", "admin"].includes(member.role)) {
+        return res.status(403).json({ error: "Acesso negado." });
+      }
+    }
+
+    const { data: history, error: histErr } = await supabaseAdmin
+      .from("organization_plan_changes")
+      .select("*")
+      .eq("organization_id", orgId)
+      .order("changed_at", { ascending: false });
+
+    if (histErr) {
+      return res.status(400).json({ error: histErr.message });
+    }
+
+    return res.json(history || []);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// OVERVIEW DE ORGANIZAÇÕES PARA O PAINEL INTERNO METRIA
+app.get("/api/admin/organizations/overview", requireAuth, requireMetriaAdmin, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não configurado." });
+  }
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const { data: orgs, error: orgsErr } = await supabaseAdmin
+      .from("organizations")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (orgsErr) return res.status(400).json({ error: orgsErr.message });
+
+    const { data: charges, error: chargesErr } = await supabaseAdmin
+      .from("manual_charges")
+      .select("id, organization_id, amount, status, due_date, reference_period");
+
+    const { data: profiles } = await supabaseAdmin
+      .from("profiles")
+      .select("id, name, email");
+
+    const overview = (orgs || []).map(org => {
+      const orgCharges = (charges || []).filter(c => c.organization_id === org.id);
+      const pendingCharges = orgCharges.filter(c => c.status === "pending");
+      const owner = (profiles || []).find(p => p.id === org.owner_id);
+
+      return {
+        id: org.id,
+        name: org.name,
+        ownerId: org.owner_id,
+        ownerName: owner?.name || "Proprietário",
+        ownerEmail: owner?.email || org.email || "",
+        plan: org.plan || "beta",
+        maxMembers: org.max_members || 1,
+        accessStatus: org.access_status || "active",
+        subscriptionStatus: org.subscription_status || "active",
+        subscriptionExpiresAt: org.subscription_expires_at,
+        planChangedAt: org.plan_changed_at,
+        nextPlanChangeAt: org.next_plan_change_at,
+        pendingChargesCount: pendingCharges.length,
+        pendingChargesTotal: pendingCharges.reduce((acc, c) => acc + Number(c.amount || 0), 0),
+        totalChargesCount: orgCharges.length,
+        createdAt: org.created_at
+      };
+    });
+
+    return res.json(overview);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// LISTAR COBRANÇAS MANUAIS (COM FILTROS)
+app.get("/api/admin/manual-charges", requireAuth, requireMetriaAdmin, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não configurado." });
+  }
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const { organizationId, status } = req.query;
+
+    let query = supabaseAdmin
+      .from("manual_charges")
+      .select("*, organizations(name, owner_id)")
+      .order("created_at", { ascending: false });
+
+    if (organizationId) {
+      query = query.eq("organization_id", organizationId);
+    }
+    if (status && status !== "all") {
+      query = query.eq("status", status);
+    }
+
+    const { data: charges, error: chargesErr } = await query;
+    if (chargesErr) return res.status(400).json({ error: chargesErr.message });
+
+    return res.json(charges || []);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// HISTÓRICO COMPLETO DE ALTERAÇÕES DE PLANO PARA O PAINEL INTERNO METRIA
+app.get("/api/admin/plan-changes", requireAuth, requireMetriaAdmin, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não configurado." });
+  }
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const { organizationId } = req.query;
+
+    let query = supabaseAdmin
+      .from("organization_plan_changes")
+      .select("*, organizations(name, owner_id)")
+      .order("changed_at", { ascending: false });
+
+    if (organizationId) {
+      query = query.eq("organization_id", organizationId);
+    }
+
+    const { data: changes, error: changesErr } = await query;
+    if (changesErr) return res.status(400).json({ error: changesErr.message });
+
+    return res.json(changes || []);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// CRIAR COBRANÇA MANUAL POR ADMINISTRADOR INTERNO
+app.post("/api/admin/manual-charges", requireAuth, requireMetriaAdmin, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não configurado." });
+  }
+  const { organizationId, referencePeriod, amount, dueDate, notes } = req.body || {};
+
+  if (!organizationId || !referencePeriod || amount === undefined || !dueDate) {
+    return res.status(400).json({ error: "Campos obrigatórios: organizationId, referencePeriod, amount, dueDate." });
+  }
+
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const { data, error } = await supabaseAdmin.rpc("admin_create_manual_charge", {
+      p_organization_id: organizationId,
+      p_reference_period: referencePeriod,
+      p_amount: Number(amount),
+      p_due_date: dueDate,
+      p_notes: notes || "Cobrança manual gerada por administrador",
+      p_admin_id: req.userId
+    });
+
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json(data);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ATUALIZAR STATUS DE COBRANÇA MANUAL (PAGAMENTO / CANCELAMENTO)
+app.put("/api/admin/manual-charges/:id/status", requireAuth, requireMetriaAdmin, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não configurado." });
+  }
+  const chargeId = req.params.id;
+  const { status, paymentDate, notes } = req.body || {};
+
+  if (!["pending", "paid", "cancelled"].includes(status)) {
+    return res.status(400).json({ error: "Status inválido. Utilize pending, paid ou cancelled." });
+  }
+
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const { data, error } = await supabaseAdmin.rpc("admin_update_manual_charge_status", {
+      p_charge_id: chargeId,
+      p_status: status,
+      p_payment_date: paymentDate || null,
+      p_notes: notes || null,
+      p_admin_id: req.userId
+    });
+
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json(data);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

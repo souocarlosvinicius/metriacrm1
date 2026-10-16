@@ -1093,6 +1093,16 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
               state: org.state || "",
               ownerId: org.owner_id,
               plan: org.plan || "beta",
+              planChangedAt: org.plan_changed_at,
+              plan_changed_at: org.plan_changed_at,
+              nextPlanChangeAt: org.next_plan_change_at,
+              next_plan_change_at: org.next_plan_change_at,
+              subscriptionStatus: org.subscription_status || "active",
+              subscription_status: org.subscription_status || "active",
+              subscriptionExpiresAt: org.subscription_expires_at,
+              subscription_expires_at: org.subscription_expires_at,
+              maxMembers: org.max_members || 1,
+              max_members: org.max_members || 1,
               accessStatus: org.access_status || "active",
               access_status: org.access_status || "active",
               suspendedAt: org.suspended_at,
@@ -1575,9 +1585,9 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
     // 1. GET ORGANIZATIONS OF THE CURRENT USER - Passed to real Express backend
     // 2. CREATE A NEW ORGANIZATION - Passed to real Express backend
 
-    // 2.5 UPDATE PLAN FOR ORGANIZATION
-    // Efetivação manual restrita: Somente operação administrativa interna autorizada no backend
-    if (pathname.startsWith("/api/organizations/") && pathname.endsWith("/plan") && method === "PUT") {
+    // 2.5 UPDATE PLAN AND CHANGE PLAN FOR ORGANIZATION
+    // Efetivação manual e mudança de plano pelo titular autorizadas no backend
+    if (pathname.startsWith("/api/organizations/") && (pathname.endsWith("/plan") || pathname.endsWith("/change-plan") || pathname.endsWith("/plan-changes"))) {
       const session = await getActiveUserSession();
       if (!session?.user) {
         console.warn("[PLAN UPDATE REJECTED] Requisição não autorizada - sessão inválida.");

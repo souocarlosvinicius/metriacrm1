@@ -93,21 +93,21 @@ async function runTests() {
 
   console.log("\n--- 3. VERIFICAÇÃO CENTRAL DE ACESSO NOS ENDPOINTS EXPRESS ---");
   await test("3.1 requireGeminiPlan bloqueia organização com access_status = 'suspended'", () => {
-    const serverTs = fs.readFileSync("server.ts", "utf8");
+    const serverTs = fs.existsSync("src/app.ts") ? fs.readFileSync("src/app.ts", "utf8") : fs.readFileSync("server.ts", "utf8");
     assert(serverTs.includes('org.access_status || "active"'), "Consulta access_status da organização");
     assert(serverTs.includes('accessStatus === "suspended"'), "Verifica suspensão");
     assert(serverTs.includes("Seu acesso está temporariamente suspenso por pendência financeira"), "Mensagem padronizada retornada");
   });
 
   await test("3.2 /api/upload e storage de documentos privados bloqueiam quando organização estiver suspensa", () => {
-    const serverTs = fs.readFileSync("server.ts", "utf8");
+    const serverTs = fs.existsSync("src/app.ts") ? fs.readFileSync("src/app.ts", "utf8") : fs.readFileSync("server.ts", "utf8");
     assert(serverTs.includes('/api/upload') && serverTs.includes('ORGANIZATION_SUSPENDED'), "Upload bloqueia organização suspensa");
     assert(serverTs.includes('/api/storage/documents/upload') && serverTs.includes('ORGANIZATION_SUSPENDED'), "Documentos upload bloqueia organização suspensa");
     assert(serverTs.includes('/api/storage/documents/sign-url') && serverTs.includes('ORGANIZATION_SUSPENDED'), "URL assinada bloqueia organização suspensa");
   });
 
   await test("3.3 Rotas administrativas /api/admin/organizations/:id/suspend e reactivate exigem requireMetriaAdmin", () => {
-    const serverTs = fs.readFileSync("server.ts", "utf8");
+    const serverTs = fs.existsSync("src/app.ts") ? fs.readFileSync("src/app.ts", "utf8") : fs.readFileSync("server.ts", "utf8");
     assert(serverTs.includes('app.post("/api/admin/organizations/:id/suspend", requireAuth, requireMetriaAdmin'), "Rota suspend protegida por requireMetriaAdmin");
     assert(serverTs.includes('app.post("/api/admin/organizations/:id/reactivate", requireAuth, requireMetriaAdmin'), "Rota reactivate protegida por requireMetriaAdmin");
     assert(serverTs.includes('app.get("/api/admin/organizations/:id/access-status", requireAuth, requireMetriaAdmin'), "Consulta de estado protegida por requireMetriaAdmin");

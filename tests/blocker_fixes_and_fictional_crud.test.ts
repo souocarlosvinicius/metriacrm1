@@ -66,12 +66,12 @@ async function runTests() {
     const schema = fs.readFileSync("supabase/schema.sql", "utf8");
     assert(schema.includes('"onboardingCompleted"'), "schema.sql inclui onboardingCompleted");
 
-    const serverTs = fs.readFileSync("server.ts", "utf8");
+    const serverTs = fs.existsSync("src/app.ts") ? fs.readFileSync("src/app.ts", "utf8") : fs.readFileSync("server.ts", "utf8");
     assert(serverTs.includes("onboardingCompleted: true"), "server.ts salva onboardingCompleted");
   });
 
   await test("2.2 Fallback de POST /api/organizations reverte organização se criação de perfil falhar", () => {
-    const serverTs = fs.readFileSync("server.ts", "utf8");
+    const serverTs = fs.existsSync("src/app.ts") ? fs.readFileSync("src/app.ts", "utf8") : fs.readFileSync("server.ts", "utf8");
     const orgPostIdx = serverTs.indexOf('app.post("/api/organizations"');
     assert(orgPostIdx !== -1, "Endpoint /api/organizations encontrado");
     const orgPostBlock = serverTs.slice(orgPostIdx, orgPostIdx + 6000);
@@ -91,7 +91,7 @@ async function runTests() {
 
   console.log("\n--- 4. ALINHAMENTO DE COLUNA CANÔNICA NO requireGeminiPlan ---");
   await test("4.1 requireGeminiPlan usa subscription_expires_at e não mascare erro de banco como inexistente", () => {
-    const serverTs = fs.readFileSync("server.ts", "utf8");
+    const serverTs = fs.existsSync("src/app.ts") ? fs.readFileSync("src/app.ts", "utf8") : fs.readFileSync("server.ts", "utf8");
     const geminiIdx = serverTs.indexOf("const requireGeminiPlan");
     assert(geminiIdx !== -1, "requireGeminiPlan encontrado");
     const geminiBlock = serverTs.slice(geminiIdx, geminiIdx + 8000);

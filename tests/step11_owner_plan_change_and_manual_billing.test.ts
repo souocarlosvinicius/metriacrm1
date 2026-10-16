@@ -15,7 +15,10 @@ async function runTests() {
     path.join(process.cwd(), "supabase", "migrations", "20261015000001_owner_plan_change_and_manual_billing.sql"),
     "utf-8"
   );
-  const serverTs = fs.readFileSync(path.join(process.cwd(), "server.ts"), "utf-8");
+  const appFilePath = fs.existsSync(path.join(process.cwd(), "src", "app.ts"))
+    ? path.join(process.cwd(), "src", "app.ts")
+    : path.join(process.cwd(), "server.ts");
+  const serverTs = fs.readFileSync(appFilePath, "utf-8");
   const settingsViewTsx = fs.readFileSync(path.join(process.cwd(), "src", "components", "SettingsView.tsx"), "utf-8");
   const adminManagerTsx = fs.readFileSync(path.join(process.cwd(), "src", "components", "AdminSuspensionManager.tsx"), "utf-8");
 

@@ -20,7 +20,10 @@ async function runTests() {
     path.join(process.cwd(), "supabase", "migrations", "20261010000001_administrative_suspension.sql"),
     "utf-8"
   );
-  const serverTs = fs.readFileSync(path.join(process.cwd(), "server.ts"), "utf-8");
+  const appFilePath = fs.existsSync(path.join(process.cwd(), "src", "app.ts"))
+    ? path.join(process.cwd(), "src", "app.ts")
+    : path.join(process.cwd(), "server.ts");
+  const serverTs = fs.readFileSync(appFilePath, "utf-8");
   const apiTs = fs.readFileSync(path.join(process.cwd(), "src", "api.ts"), "utf-8");
 
   // ----------------------------------------------------------------------------

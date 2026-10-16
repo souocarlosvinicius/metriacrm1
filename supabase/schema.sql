@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS public.organization_invites (
   "invited_name" text,
   "role" text DEFAULT 'broker' CHECK (role IN ('owner', 'admin', 'manager', 'broker')),
   "token" text UNIQUE NOT NULL,
+  "token_hash" text,
   "status" text DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'expired', 'cancelled')),
   "invited_by" uuid REFERENCES auth.users(id) ON DELETE SET NULL,
   "accepted_by" uuid REFERENCES auth.users(id) ON DELETE SET NULL,
@@ -151,6 +152,8 @@ CREATE TABLE IF NOT EXISTS public.organization_invites (
   "created_at" timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
   "accepted_at" timestamp with time zone
 );
+
+CREATE INDEX IF NOT EXISTS idx_organization_invites_token_hash ON public.organization_invites(token_hash);
 
 -- Trigger to atomically bootstrap the first owner upon organization creation
 CREATE OR REPLACE FUNCTION public.handle_organization_bootstrap()
@@ -653,14 +656,24 @@ ALTER TABLE public.history_events ADD COLUMN IF NOT EXISTS "assigned_to" uuid RE
 CREATE OR REPLACE FUNCTION public.get_user_role(p_org_id uuid)
 RETURNS text
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_role text;
 BEGIN
-  SELECT role INTO v_role
-  FROM public.organization_members
-  WHERE organization_id = p_org_id AND user_id = auth.uid() AND status = 'active';
+  SELECT om.role INTO v_role
+  FROM public.organization_members om
+  JOIN public.organizations o ON o.id = om.organization_id
+  WHERE om.organization_id = p_org_id 
+    AND om.user_id = auth.uid() 
+    AND om.status = 'active'
+    AND o.access_status = 'active'
+    AND o.subscription_status = 'active'
+    AND (
+      o.plan = 'beta'
+      OR o.subscription_expires_at IS NULL
+      OR o.subscription_expires_at > timezone('utc'::text, now())
+    );
   
   RETURN v_role;
 END;
@@ -680,6 +693,12 @@ BEGIN
       AND om.user_id = auth.uid() 
       AND om.status = 'active'
       AND o.access_status = 'active'
+      AND o.subscription_status = 'active'
+      AND (
+        o.plan = 'beta'
+        OR o.subscription_expires_at IS NULL
+        OR o.subscription_expires_at > timezone('utc'::text, now())
+      )
   );
 END;
 $$ LANGUAGE plpgsql;
@@ -687,26 +706,26 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION public.is_org_admin(p_org_id uuid)
 RETURNS boolean
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_role text;
 BEGIN
   v_role := public.get_user_role(p_org_id);
-  RETURN v_role IN ('owner', 'admin');
+  RETURN COALESCE(v_role IN ('owner', 'admin'), false);
 END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION public.is_org_manager_or_higher(p_org_id uuid)
 RETURNS boolean
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_role text;
 BEGIN
   v_role := public.get_user_role(p_org_id);
-  RETURN v_role IN ('owner', 'admin', 'manager');
+  RETURN COALESCE(v_role IN ('owner', 'admin', 'manager'), false);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -1977,19 +1996,26 @@ DECLARE
   v_current_count integer;
   v_max_members integer;
   v_plan text;
+  v_org_access_status text;
+  v_sub_status text;
+  v_sub_expires timestamp with time zone;
   v_invite_id uuid;
   v_expires_at timestamp with time zone;
 BEGIN
-  -- 1. Autenticação do chamador
+  -- 1. Autenticação estrita do chamador
   v_user_id := auth.uid();
   IF v_user_id IS NULL THEN
     RAISE EXCEPTION 'Not authenticated';
   END IF;
 
-  -- 2. Verificação de permissão do chamador na organização (owner ou admin)
+  -- 2. Exigência estrita de vínculo ativo na organização e papel owner/admin (recusa explícita de NULL)
   v_caller_role := public.get_user_role(p_org_id);
+  IF v_caller_role IS NULL THEN
+    RAISE EXCEPTION 'Acesso negado: usuário não possui vínculo ativo nesta organização.';
+  END IF;
+
   IF v_caller_role NOT IN ('owner', 'admin') THEN
-    RAISE EXCEPTION 'Apenas proprietários e administradores podem convidar membros.';
+    RAISE EXCEPTION 'Acesso negado: apenas proprietários e administradores com vínculo ativo podem convidar membros.';
   END IF;
 
   -- 3. Validação de e-mail e cargo
@@ -1999,6 +2025,10 @@ BEGIN
   END IF;
 
   v_target_role := LOWER(TRIM(COALESCE(p_role, 'broker')));
+  IF v_target_role = 'owner' THEN
+    RAISE EXCEPTION 'Cannot invite another owner directly. Transfer ownership instead.';
+  END IF;
+
   IF v_target_role NOT IN ('admin', 'manager', 'broker') THEN
     RAISE EXCEPTION 'Cargo inválido para convite. Escolha admin, manager ou broker.';
   END IF;
@@ -2018,15 +2048,27 @@ BEGIN
     RAISE EXCEPTION 'Este usuário já é um membro ativo desta imobiliária.';
   END IF;
 
-  -- 5. Verificação da cota de membros no banco de dados com bloqueio de concorrência
-  SELECT plan, max_members
-  INTO v_plan, v_max_members
+  -- 5. Verificação da integridade, suspensão, validade de assinatura e cota de membros da organização
+  SELECT plan, max_members, access_status, subscription_status, subscription_expires_at
+  INTO v_plan, v_max_members, v_org_access_status, v_sub_status, v_sub_expires
   FROM public.organizations
   WHERE id = p_org_id
   FOR SHARE;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Organização não encontrada.';
+  END IF;
+
+  IF v_org_access_status = 'suspended' THEN
+    RAISE EXCEPTION 'Acesso negado: a organização está temporariamente suspensa por pendência financeira.';
+  END IF;
+
+  IF v_sub_status <> 'active' THEN
+    RAISE EXCEPTION 'Acesso negado: a assinatura da organização está inativa ou suspensa.';
+  END IF;
+
+  IF v_plan <> 'beta' AND v_sub_expires IS NOT NULL AND v_sub_expires <= timezone('utc'::text, now()) THEN
+    RAISE EXCEPTION 'Acesso negado: a assinatura da organização expirou.';
   END IF;
 
   -- Planos beta, start e pro não suportam convite de equipe
@@ -2119,6 +2161,10 @@ DECLARE
   v_current_count integer;
   v_max_members integer;
   v_input_hash text;
+  v_plan text;
+  v_org_access_status text;
+  v_sub_status text;
+  v_sub_expires timestamp with time zone;
 BEGIN
   -- 1. Exige autenticação estrita
   v_user_id := auth.uid();
@@ -2186,12 +2232,24 @@ BEGIN
     RAISE EXCEPTION 'Este convite foi enviado para "%", mas você está autenticado como "%". Faça login com o e-mail correto.', v_invite.invited_email, v_user_email;
   END IF;
 
-  -- 8. Verificação transacional de limite de membros da organização
-  SELECT max_members
-  INTO v_max_members
+  -- 8. Verificação transacional de status, suspensão, assinatura e limite de membros da organização
+  SELECT plan, max_members, access_status, subscription_status, subscription_expires_at
+  INTO v_plan, v_max_members, v_org_access_status, v_sub_status, v_sub_expires
   FROM public.organizations
   WHERE id = v_invite.organization_id
   FOR SHARE;
+
+  IF v_org_access_status = 'suspended' THEN
+    RAISE EXCEPTION 'Acesso negado: a organização está temporariamente suspensa por pendência financeira.';
+  END IF;
+
+  IF v_sub_status <> 'active' THEN
+    RAISE EXCEPTION 'Acesso negado: a assinatura da organização está inativa ou suspensa.';
+  END IF;
+
+  IF v_plan <> 'beta' AND v_sub_expires IS NOT NULL AND v_sub_expires <= timezone('utc'::text, now()) THEN
+    RAISE EXCEPTION 'Acesso negado: a assinatura da organização expirou.';
+  END IF;
 
   SELECT count(*)
   INTO v_current_count
@@ -3458,7 +3516,7 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 BEGIN
-  IF auth.uid() IS NOT NULL AND auth.role() = 'authenticated' THEN
+  IF current_setting('role', true) = 'authenticated' AND auth.uid() IS NOT NULL AND auth.role() = 'authenticated' THEN
     IF TG_OP = 'INSERT' THEN
       NEW.plan := 'beta';
       NEW.subscription_status := 'active';
@@ -3559,10 +3617,16 @@ BEGIN
     RAISE EXCEPTION 'Plano inválido: "%". Utilize beta, start, pro, max ou pro_max.', p_target_plan;
   END IF;
 
+  -- Validação estrita da data de liberação
+  IF p_expires_at IS NOT NULL AND p_expires_at <= timezone('utc'::text, now()) THEN
+    RAISE EXCEPTION 'A data de expiração da liberação deve ser no futuro.';
+  END IF;
+
+  -- Consolidação dos limites comerciais (única fonte de verdade: max = 5, pro_max = 99, outros = 1)
   IF p_target_plan = 'max' THEN
-    v_max_members := 10;
+    v_max_members := 5;
   ELSIF p_target_plan = 'pro_max' THEN
-    v_max_members := 50;
+    v_max_members := 99;
   ELSE
     v_max_members := 1;
   END IF;

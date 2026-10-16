@@ -401,8 +401,8 @@ export default function AdminSuspensionManager({
               <option value="beta">Beta (Gratuito - 1 usuário)</option>
               <option value="start">Start (1 usuário - sem IA)</option>
               <option value="pro">Pro (1 usuário - com Gemini IA)</option>
-              <option value="max">Max (Até 10 corretores - com Gemini IA)</option>
-              <option value="pro_max">PRO MAX (Até 50 corretores - com Gemini IA & BI)</option>
+              <option value="max">Max (Até 5 corretores - com Gemini IA)</option>
+              <option value="pro_max">PRO MAX (Até 99 corretores - com Gemini IA & BI)</option>
             </select>
           </div>
 

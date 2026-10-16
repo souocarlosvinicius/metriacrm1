@@ -763,6 +763,28 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
         };
       }
 
+      const subStatus = String(org.subscription_status || "active").toLowerCase();
+      if (subStatus !== "active") {
+        return {
+          authorized: false,
+          role: null,
+          error: "Acesso negado: a assinatura da organização está inativa ou suspensa.",
+          code: "SUBSCRIPTION_INACTIVE"
+        };
+      }
+
+      if (org.subscription_expires_at) {
+        const expDate = new Date(org.subscription_expires_at).getTime();
+        if (!isNaN(expDate) && expDate < Date.now() && org.plan !== "beta") {
+          return {
+            authorized: false,
+            role: null,
+            error: "Acesso negado: a assinatura da organização expirou. Regularize sua assinatura.",
+            code: "SUBSCRIPTION_EXPIRED"
+          };
+        }
+      }
+
       // 2. Valida membership ativa ou propriedade (default_organization_id sozinho não comprova)
       const role = await getOrgMemberRole(orgId, userId);
       if (!role) {

@@ -34,6 +34,10 @@ import {
   ENV_VALIDATION,
   validateAndLoadServerEnv
 } from "./src/serverEnv.js";
+import {
+  PLAN_LIMITS,
+  getMaxMembersByPlan
+} from "./src/config/plans.js";
 
 const app = express();
 const PORT = SERVER_CONFIG.port;
@@ -1435,14 +1439,27 @@ app.put("/api/organizations/:id/plan", requireAuth, requireMetriaAdmin, async (r
 
   if (!validPlans.includes(plan)) {
     console.error(`[SERVER PLAN UPDATE ERROR] Plano inválido recebido: "${plan}".`);
-    return res.status(400).json({ error: `Plano inválido: ${plan}` });
+    return res.status(400).json({ error: `Plano inválido: ${plan}`, code: "INVALID_PLAN" });
+  }
+
+  // Validação estrita da data de liberação (não pode ser data passada/retroativa)
+  if (targetExpiresAt) {
+    const expDate = new Date(targetExpiresAt);
+    if (isNaN(expDate.getTime())) {
+      console.error(`[SERVER PLAN UPDATE ERROR] Data de expiração inválida: "${targetExpiresAt}".`);
+      return res.status(400).json({ error: "Data de expiração da liberação inválida.", code: "INVALID_EXPIRATION_DATE" });
+    }
+    if (expDate.getTime() <= Date.now()) {
+      console.error(`[SERVER PLAN UPDATE ERROR] Data de expiração retroativa: "${targetExpiresAt}".`);
+      return res.status(400).json({ error: "A data de expiração da liberação deve ser no futuro.", code: "EXPIRATION_MUST_BE_FUTURE" });
+    }
   }
 
   try {
     const { createClient } = await import("@supabase/supabase-js");
     const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-    // 1. Tenta a RPC atômica transacional com auditoria (admin_set_organization_plan)
+    // Execução estritamente transacional da RPC com auditoria
     const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc("admin_set_organization_plan", {
       p_organization_id: orgId,
       p_target_plan: plan,
@@ -1452,95 +1469,35 @@ app.put("/api/organizations/:id/plan", requireAuth, requireMetriaAdmin, async (r
       p_metadata: metadata || {}
     });
 
-    if (!rpcErr && rpcResult?.success) {
-      console.log("[SERVER PLAN UPDATE RPC SUCCESS]", rpcResult);
-      return res.json({
-        id: orgId,
-        name: rpcResult.name,
-        plan: rpcResult.plan,
-        subscriptionStatus: rpcResult.subscription_status || "active",
-        subscriptionExpiresAt: rpcResult.subscription_expires_at,
-        maxMembers: rpcResult.max_members,
-        auditId: rpcResult.audit_id,
-        message: "Plano atualizado com sucesso e auditoria registrada em transação."
+    if (rpcErr) {
+      console.error("[SERVER PLAN RPC ERROR] Falha na RPC transacional admin_set_organization_plan:", rpcErr);
+      return res.status(400).json({
+        error: `Falha na liberação de plano em transação: ${rpcErr.message}`,
+        code: "PLAN_UPDATE_TRANSACTION_FAILED"
       });
     }
 
-    if (rpcErr) {
-      console.warn("[SERVER PLAN RPC FALLBACK] RPC admin_set_organization_plan retornou erro ou ausente, executando fallback atômico:", rpcErr.message);
+    if (!rpcResult || !rpcResult.success) {
+      return res.status(400).json({
+        error: "Falha na liberação de plano: transação não confirmada.",
+        code: "PLAN_UPDATE_TRANSACTION_FAILED"
+      });
     }
 
-    // 2. Fallback de transação com auditoria
-    const maxMembers = plan === "max" ? 10 : plan === "pro_max" ? 50 : 1;
-    const { data: currentOrg } = await supabaseAdmin
-      .from("organizations")
-      .select("plan, subscription_expires_at, subscription_status, name, trade_name")
-      .eq("id", orgId)
-      .maybeSingle();
-
-    if (!currentOrg) {
-      return res.status(404).json({ error: "Organização não encontrada.", code: "ORG_NOT_FOUND" });
-    }
-
-    const { data: updatedOrg, error: updateErr } = await supabaseAdmin
-      .from("organizations")
-      .update({
-        plan,
-        subscription_status: "active",
-        subscription_expires_at: targetExpiresAt,
-        max_members: maxMembers,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", orgId)
-      .select()
-      .maybeSingle();
-
-    if (updateErr) {
-      console.error("[SERVER PLAN UPDATE ERROR]", updateErr);
-      return res.status(400).json({ error: updateErr.message });
-    }
-
-    // Registra na tabela de auditoria de planos
-    let auditId = null;
-    try {
-      const { data: auditRecord } = await supabaseAdmin
-        .from("organization_plan_audit")
-        .insert({
-          organization_id: orgId,
-          action: "grant_plan",
-          previous_plan: currentOrg.plan || "beta",
-          new_plan: plan,
-          previous_expires_at: currentOrg.subscription_expires_at || null,
-          new_expires_at: targetExpiresAt,
-          previous_status: currentOrg.subscription_status || "active",
-          new_status: "active",
-          reason: reason || "Liberação manual de plano por administrador interno",
-          performed_by: req.userId,
-          metadata: metadata || {}
-        })
-        .select("id")
-        .maybeSingle();
-      auditId = auditRecord?.id || null;
-    } catch (auditErr: any) {
-      console.warn("[SERVER PLAN AUDIT INSERT NOTICE]", auditErr?.message);
-    }
-
-    console.log("[SERVER PLAN UPDATE SUCCESS] Plano atualizado para:", updatedOrg);
-
+    console.log("[SERVER PLAN UPDATE RPC SUCCESS]", rpcResult);
     return res.json({
-      id: updatedOrg.id,
-      name: updatedOrg.name,
-      tradeName: updatedOrg.trade_name,
-      plan: updatedOrg.plan,
-      subscriptionStatus: updatedOrg.subscription_status || "active",
-      subscriptionExpiresAt: updatedOrg.subscription_expires_at || targetExpiresAt,
-      maxMembers: updatedOrg.max_members || maxMembers,
-      auditId,
-      message: "Plano atualizado com sucesso por administrador interno."
+      id: orgId,
+      name: rpcResult.name,
+      plan: rpcResult.plan,
+      subscriptionStatus: rpcResult.subscription_status || "active",
+      subscriptionExpiresAt: rpcResult.subscription_expires_at,
+      maxMembers: rpcResult.max_members || getMaxMembersByPlan(plan),
+      auditId: rpcResult.audit_id,
+      message: "Plano atualizado com sucesso e auditoria registrada em transação."
     });
   } catch (err: any) {
     console.error("Erro no endpoint PUT /api/organizations/:id/plan:", err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message, code: "INTERNAL_SERVER_ERROR" });
   }
 });
 

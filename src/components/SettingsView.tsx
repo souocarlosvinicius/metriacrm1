@@ -33,13 +33,22 @@ import {
   FileJson,
   ShieldCheck,
   ShieldAlert,
+  AlertTriangle,
   Bell,
   History as HistoryIcon
 } from "lucide-react";
 import AdminSuspensionManager from "./AdminSuspensionManager";
+import { normalizePlanId } from "../config/plans";
 
 interface SettingsViewProps {
   currentUser: User;
+  currentOrg?: any;
+  activeOrgId?: string;
+  onOrganizationChanged?: (updatedOrg: any) => void;
+  userOrganizations?: any[];
+  onSelectOrganization?: (orgId: string) => void;
+  orgInconsistencyError?: string | null;
+  orgStatus?: "loading" | "ready" | "error" | "unselected";
   onUpdateSuccess: (updatedUser: User) => void;
   onLogout: () => void;
   properties?: Property[];
@@ -84,6 +93,12 @@ const DEFAULT_MESSAGE_TEMPLATES: MessageTemplates = {
 
 export default function SettingsView({ 
   currentUser, 
+  currentOrg,
+  activeOrgId,
+  onOrganizationChanged,
+  userOrganizations = [],
+  onSelectOrganization,
+  orgInconsistencyError,
   onUpdateSuccess, 
   onLogout,
   properties = [],
@@ -164,18 +179,33 @@ export default function SettingsView({
   const [isSuccess, setIsSuccess] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Active Organization ID resolution
+  const effectiveOrgId = activeOrgId || currentOrg?.id || currentUser.defaultOrganizationId || (typeof localStorage !== "undefined" ? localStorage.getItem("vega_crm_active_org_id") : null);
+
   // Subscription Plan States
-  const [orgPlan, setOrgPlan] = useState<"beta" | "start" | "pro" | "max" | "pro_max">("beta");
-  const [orgName, setOrgName] = useState<string>("");
+  const [orgPlan, setOrgPlan] = useState<"beta" | "start" | "pro" | "max" | "pro_max" | null>(currentOrg?.plan ? normalizePlanId(currentOrg.plan) : null);
+  const [orgName, setOrgName] = useState<string>(currentOrg?.name || "");
   const [usageStats, setUsageStats] = useState<{ clients: number; properties: number; members: number }>({ clients: 0, properties: 0, members: 0 });
-  const [isPlanLoading, setIsPlanLoading] = useState(false);
+  const [isPlanLoading, setIsPlanLoading] = useState<boolean>(!currentOrg?.plan);
   const [planSuccessMsg, setPlanSuccessMsg] = useState<string | null>(null);
-  const [planErrorMsg, setPlanErrorMsg] = useState<string | null>(null);
-  const [planChangedAt, setPlanChangedAt] = useState<string | null>(null);
-  const [nextPlanChangeAt, setNextPlanChangeAt] = useState<string | null>(null);
-  const [isOrgOwner, setIsOrgOwner] = useState(true);
+  const [planErrorMsg, setPlanErrorMsg] = useState<string | null>(orgInconsistencyError || null);
+  const [planChangedAt, setPlanChangedAt] = useState<string | null>(currentOrg?.planChangedAt || currentOrg?.plan_changed_at || null);
+  const [nextPlanChangeAt, setNextPlanChangeAt] = useState<string | null>(currentOrg?.nextPlanChangeAt || currentOrg?.next_plan_change_at || null);
+  const [isOrgOwner, setIsOrgOwner] = useState<boolean>(currentOrg ? (currentOrg.userRole === "owner" || currentOrg.ownerId === currentUser.id) : true);
   const [pendingConfirmPlan, setPendingConfirmPlan] = useState<"beta" | "start" | "pro" | "max" | "pro_max" | null>(null);
   const [planHistory, setPlanHistory] = useState<any[]>([]);
+
+  // Sincroniza com as props atuais quando a organização ativa for atualizada
+  React.useEffect(() => {
+    if (currentOrg && currentOrg.id === effectiveOrgId) {
+      setOrgPlan(currentOrg.plan ? normalizePlanId(currentOrg.plan) : null);
+      setOrgName(currentOrg.name || "");
+      setPlanChangedAt(currentOrg.planChangedAt || currentOrg.plan_changed_at || null);
+      setNextPlanChangeAt(currentOrg.nextPlanChangeAt || currentOrg.next_plan_change_at || null);
+      setIsOrgOwner(currentOrg.userRole === "owner" || currentOrg.ownerId === currentUser.id);
+      setIsPlanLoading(false);
+    }
+  }, [currentOrg, effectiveOrgId]);
 
   // Metria Internal Admin State
   const [isInternalAdmin, setIsInternalAdmin] = useState(false);
@@ -196,31 +226,51 @@ export default function SettingsView({
   }, []);
 
   const fetchOrgSubscription = async () => {
-    const orgId = currentUser.defaultOrganizationId;
-    if (!orgId) return;
+    if (!effectiveOrgId) {
+      setIsPlanLoading(false);
+      setPlanErrorMsg("Nenhuma organização ativa selecionada.");
+      setOrgPlan(null);
+      return;
+    }
 
     setIsPlanLoading(true);
     setPlanErrorMsg(null);
     try {
       // 1. Fetch organization details
       const orgsRes = await apiFetch("/api/organizations");
-      if (orgsRes.ok) {
-        const orgs = await orgsRes.json();
-        const activeOrg = orgs.find((o: any) => o.id === orgId);
-        if (activeOrg) {
-          setOrgPlan(activeOrg.plan || "beta");
-          setOrgName(activeOrg.name || "");
-          setPlanChangedAt(activeOrg.planChangedAt || activeOrg.plan_changed_at || null);
-          setNextPlanChangeAt(activeOrg.nextPlanChangeAt || activeOrg.next_plan_change_at || null);
-          setIsOrgOwner(activeOrg.userRole === "owner" || activeOrg.ownerId === currentUser.id);
-        }
+      if (!orgsRes.ok) {
+        const errData = await orgsRes.json().catch(() => ({}));
+        throw new Error(errData.error || `Erro (${orgsRes.status}) ao carregar organizações.`);
+      }
+
+      const orgs = await orgsRes.json();
+      if (!Array.isArray(orgs)) {
+        throw new Error("Formato inválido ao listar organizações.");
+      }
+
+      // Regra 3: Não escolha silenciosamente orgs[0] quando o ID esperado não for encontrado.
+      const activeOrg = orgs.find((o: any) => o.id === effectiveOrgId);
+      if (!activeOrg) {
+        setOrgPlan(null);
+        throw new Error(`Organização ativa (${effectiveOrgId}) não encontrada na sua conta.`);
+      }
+
+      const normalizedPlan = normalizePlanId(activeOrg.plan);
+      setOrgPlan(normalizedPlan);
+      setOrgName(activeOrg.name || "");
+      setPlanChangedAt(activeOrg.planChangedAt || activeOrg.plan_changed_at || null);
+      setNextPlanChangeAt(activeOrg.nextPlanChangeAt || activeOrg.next_plan_change_at || null);
+      setIsOrgOwner(activeOrg.userRole === "owner" || activeOrg.ownerId === currentUser.id);
+
+      if (onOrganizationChanged) {
+        onOrganizationChanged(activeOrg);
       }
 
       // 2. Fetch counts
       const [clientsRes, propertiesRes, membersRes] = await Promise.all([
         apiFetch("/api/clients"),
         apiFetch("/api/properties"),
-        apiFetch(`/api/organizations/members?organizationId=${orgId}`)
+        apiFetch(`/api/organizations/members?organizationId=${effectiveOrgId}`)
       ]);
 
       let clientsCount = 0;
@@ -248,7 +298,7 @@ export default function SettingsView({
 
       // 3. Fetch plan change history
       try {
-        const histRes = await apiFetch(`/api/organizations/${orgId}/plan-changes`);
+        const histRes = await apiFetch(`/api/organizations/${effectiveOrgId}/plan-changes`);
         if (histRes.ok) {
           const histData = await histRes.json();
           if (Array.isArray(histData)) setPlanHistory(histData);
@@ -256,8 +306,10 @@ export default function SettingsView({
       } catch (e) {
         console.warn("Não foi possível carregar histórico de mudanças de plano:", e);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Erro ao carregar dados do plano:", err);
+      setPlanErrorMsg(err.message || "Erro de rede ao carregar dados da organização.");
+      setOrgPlan(null);
     } finally {
       setIsPlanLoading(false);
     }
@@ -270,6 +322,31 @@ export default function SettingsView({
   }, [nextPlanChangeAt]);
 
   const renderPlanActionButton = (planKey: "beta" | "start" | "pro" | "max" | "pro_max", planName: string) => {
+    // Regra 1: Não use Beta como plano confirmado enquanto os dados ainda estão carregando.
+    if (isPlanLoading) {
+      return (
+        <button
+          type="button"
+          disabled
+          className="w-full mt-5 py-2.5 text-xs font-semibold rounded-xl bg-surface-container text-on-surface-variant/40 border border-outline-variant/20 cursor-wait animate-pulse"
+        >
+          Carregando...
+        </button>
+      );
+    }
+
+    if (orgPlan === null) {
+      return (
+        <button
+          type="button"
+          disabled
+          className="w-full mt-5 py-2.5 text-xs font-semibold rounded-xl bg-surface-container text-error/60 border border-error/20 cursor-not-allowed"
+        >
+          Consulta falhou
+        </button>
+      );
+    }
+
     const isCurrent = orgPlan === planKey;
     if (isCurrent) {
       return (
@@ -329,7 +406,7 @@ export default function SettingsView({
   };
 
   const handleSelectPlan = (targetPlan: "beta" | "start" | "pro" | "max" | "pro_max") => {
-    const orgId = currentUser.defaultOrganizationId;
+    const orgId = effectiveOrgId;
     if (!orgId) {
       setPlanErrorMsg("Você precisa de uma organização ativa para alterar o plano.");
       return;
@@ -339,7 +416,7 @@ export default function SettingsView({
     setPlanSuccessMsg(null);
 
     // 1. Selecionar o plano já ativo não é uma mudança
-    if (targetPlan === orgPlan) {
+    if (orgPlan && targetPlan === orgPlan) {
       setPlanSuccessMsg(`O plano ${targetPlan.toUpperCase()} já está ativo nesta organização. Nenhuma alteração necessária.`);
       return;
     }
@@ -394,15 +471,18 @@ export default function SettingsView({
   const handleConfirmPlanChange = async () => {
     if (!pendingConfirmPlan) return;
     const targetPlan = pendingConfirmPlan;
-    const orgId = currentUser.defaultOrganizationId;
-    if (!orgId) return;
+    const orgId = effectiveOrgId;
+    if (!orgId) {
+      setPlanErrorMsg("Organização ativa não identificada.");
+      return;
+    }
 
     setIsPlanLoading(true);
     setPlanErrorMsg(null);
     setPlanSuccessMsg(null);
 
     try {
-      const res = await apiFetch(`/api/organizations/${orgId}/change-plan`, {
+      const res = await apiFetch(`/api/organizations/${effectiveOrgId}/change-plan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -417,18 +497,91 @@ export default function SettingsView({
         throw new Error(data.error || "Erro ao alterar plano.");
       }
 
-      const confirmedPlan = data.new_plan || data.plan || targetPlan;
-      setOrgPlan(confirmedPlan);
-      setPlanChangedAt(data.plan_changed_at || new Date().toISOString());
-      setNextPlanChangeAt(data.next_plan_change_at || null);
+      // Regra 4: Depois da troca, releia a mesma organização e confirme plano e datas persistidos antes de mostrar sucesso.
+      // NÃO USE targetPlan como fallback de confirmação.
+      let reloadedOrg: any = null;
+      try {
+        const singleRes = await apiFetch(`/api/organizations/${orgId}`);
+        if (singleRes.ok) {
+          const singleData = await singleRes.json();
+          // Regra 5: Ignore respostas antigas de outra organização
+          if (singleData && singleData.id === orgId) {
+            reloadedOrg = singleData;
+          } else {
+            console.warn(`[SettingsView] Resposta de organização descartada: esperava ${orgId}, recebeu ${singleData?.id}`);
+          }
+        }
+      } catch (e) {
+        console.warn("Aviso ao buscar organização individual pós-alteração:", e);
+      }
+
+      if (!reloadedOrg) {
+        const verifyRes = await apiFetch("/api/organizations");
+        if (!verifyRes.ok) {
+          throw new Error("Alteração enviada, mas não foi possível verificar o banco de dados. Atualize a página para confirmar.");
+        }
+
+        const verifiedOrgs = await verifyRes.json();
+        if (!Array.isArray(verifiedOrgs)) {
+          throw new Error("Formato inválido ao revalidar organizações pós-alteração.");
+        }
+
+        reloadedOrg = verifiedOrgs.find((o: any) => o.id === orgId);
+      }
+
+      if (!reloadedOrg) {
+        throw new Error(`Organização ativa (${orgId}) não foi encontrada na revalidação pós-alteração.`);
+      }
+
+      const persistedPlan = normalizePlanId(reloadedOrg.plan);
+      const persistedChangedAt = reloadedOrg.planChangedAt || reloadedOrg.plan_changed_at;
+      const persistedNextChangeAt = reloadedOrg.nextPlanChangeAt || reloadedOrg.next_plan_change_at;
+
+      // Confirmação estrita de persistência real no banco: NÃO USE targetPlan como fallback
+      if (persistedPlan !== targetPlan) {
+        throw new Error(`Falha de persistência no banco: o plano confirmado (${persistedPlan}) diverge do solicitado (${targetPlan}).`);
+      }
+
+      // Atualiza os estados apenas com os dados confirmados do banco
+      setOrgPlan(persistedPlan);
+      setPlanChangedAt(persistedChangedAt || null);
+      setNextPlanChangeAt(persistedNextChangeAt || null);
       setPendingConfirmPlan(null);
 
-      await fetchOrgSubscription();
+      if (onOrganizationChanged) {
+        onOrganizationChanged(reloadedOrg);
+      }
 
-      window.dispatchEvent(new CustomEvent("organization-plan-changed", { detail: { orgId, plan: confirmedPlan } }));
+      // Unifica organização ativa no storage e no perfil via operação autorizada específica
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("vega_crm_active_org_id", orgId);
+      }
+
+      try {
+        await apiFetch("/api/organizations/select", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ organizationId: orgId })
+        });
+      } catch (syncErr) {
+        console.warn("Aviso ao persistir organização ativa no perfil pós-troca de plano:", syncErr);
+      }
+
+      window.dispatchEvent(new CustomEvent("organization-plan-changed", { 
+        detail: { 
+          orgId, 
+          plan: persistedPlan,
+          planChangedAt: persistedChangedAt,
+          nextPlanChangeAt: persistedNextChangeAt
+        } 
+      }));
+
       onUpdateSuccess({
         ...currentUser,
+        defaultOrganizationId: orgId
       });
+
+      await fetchOrgSubscription();
 
       const planNameMap: Record<string, string> = {
         beta: "Plano Beta",
@@ -438,9 +591,9 @@ export default function SettingsView({
         pro_max: "Plano PRO MAX"
       };
 
-      setPlanSuccessMsg(`Plano alterado com sucesso para ${planNameMap[confirmedPlan] || confirmedPlan}! A cobrança será tratada manualmente pela Metria. Nova alteração disponível em 30 dias.`);
+      setPlanSuccessMsg(`Plano confirmado com sucesso para ${planNameMap[persistedPlan] || persistedPlan}! A cobrança será tratada manualmente pela Metria. Nova alteração disponível em 30 dias.`);
     } catch (err: any) {
-      setPlanErrorMsg(err.message || "Erro de rede ao alterar o plano.");
+      setPlanErrorMsg(err.message || "Erro ao alterar o plano.");
     } finally {
       setIsPlanLoading(false);
     }
@@ -450,7 +603,7 @@ export default function SettingsView({
     if (activeSubTab === "planos") {
       fetchOrgSubscription();
     }
-  }, [activeSubTab]);
+  }, [activeSubTab, effectiveOrgId]);
 
   // Handlers for Pipeline Stages
   const handleAddStage = () => {
@@ -1788,9 +1941,41 @@ export default function SettingsView({
                 )}
 
                 {planErrorMsg && (
-                  <div className="p-4 bg-error/5 border border-error/20 text-error text-xs rounded-2xl flex items-start gap-3">
-                    <X className="w-4 h-4 text-error shrink-0 mt-0.5" />
-                    <div>{planErrorMsg}</div>
+                  <div className="p-4 bg-error/10 border border-error/30 text-error text-xs rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in">
+                    <div className="flex items-center gap-2 font-medium">
+                      <AlertTriangle className="w-4 h-4 text-error shrink-0" />
+                      <div>{planErrorMsg}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={fetchOrgSubscription}
+                      className="px-3 py-1.5 text-xs font-bold bg-error text-white rounded-lg hover:bg-error/90 transition-colors shrink-0 cursor-pointer"
+                    >
+                      Tentar Novamente
+                    </button>
+                  </div>
+                )}
+
+                {/* Organization selector if multiple organizations exist */}
+                {userOrganizations && userOrganizations.length > 1 && onSelectOrganization && (
+                  <div className="flex items-center gap-3 bg-surface-container p-3 rounded-2xl border border-outline-variant/30">
+                    <Building className="w-5 h-5 text-primary shrink-0" />
+                    <div className="flex-1">
+                      <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">
+                        Organização Ativa
+                      </label>
+                      <select
+                        value={effectiveOrgId || ""}
+                        onChange={(e) => onSelectOrganization(e.target.value)}
+                        className="w-full mt-1 bg-surface-container-lowest border border-outline-variant/40 rounded-xl px-3 py-1.5 text-xs font-semibold text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/40 cursor-pointer"
+                      >
+                        {userOrganizations.map((org: any) => (
+                          <option key={org.id} value={org.id}>
+                            {org.name || "Sem Nome"} (ID: {org.id.slice(0, 8)}...{org.id.slice(-4)}) - Plano: {org.plan?.toUpperCase() || "BETA"}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 )}
 
@@ -1800,24 +1985,51 @@ export default function SettingsView({
                     <div>
                       <span className="text-[10px] font-bold text-primary uppercase tracking-wider">Plano Atual da Organização</span>
                       <h4 className="font-display text-xl font-bold text-on-surface mt-0.5 flex items-center gap-2.5">
-                        {orgPlan === "beta" && "Plano Beta (Fase de Testes)"}
-                        {orgPlan === "start" && "Plano Start"}
-                        {orgPlan === "pro" && "Plano Pro (IA Integrada)"}
-                        {orgPlan === "max" && "Plano Max (Imobiliária & Equipe)"}
-                        {orgPlan === "pro_max" && "Plano PRO MAX (Imobiliária Avançada)"}
-                        <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-200">Ativo</span>
+                        {isPlanLoading ? (
+                          <span className="text-on-surface-variant flex items-center gap-2 text-base font-semibold">
+                            <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                            Carregando dados do plano...
+                          </span>
+                        ) : orgPlan ? (
+                          <>
+                            {orgPlan === "beta" && "Plano Beta (Fase de Testes)"}
+                            {orgPlan === "start" && "Plano Start"}
+                            {orgPlan === "pro" && "Plano Pro (IA Integrada)"}
+                            {orgPlan === "max" && "Plano Max (Imobiliária & Equipe)"}
+                            {orgPlan === "pro_max" && "Plano PRO MAX (Imobiliária Avançada)"}
+                            <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-200">Ativo</span>
+                          </>
+                        ) : (
+                          <span className="text-error text-sm font-semibold flex items-center gap-1.5">
+                            <AlertTriangle className="w-4 h-4 text-error" />
+                            Falha na consulta do plano
+                          </span>
+                        )}
                       </h4>
-                      <p className="text-xs text-on-surface-variant font-medium mt-0.5">Organização: <span className="text-primary font-bold">{orgName || "Carregando..."}</span></p>
+                      <p className="text-xs text-on-surface-variant font-medium mt-0.5">
+                        Organização: <span className="text-primary font-bold">{orgName || (isPlanLoading ? "Carregando..." : "Não identificada")}</span>
+                        {effectiveOrgId && (
+                          <span className="font-mono text-[10px] text-on-surface-variant/70 ml-2">({effectiveOrgId})</span>
+                        )}
+                      </p>
                     </div>
 
                     <div className="bg-surface-container-high px-4 py-2.5 rounded-2xl border border-outline-variant/20 text-right">
                       <span className="text-[10px] text-on-surface-variant block uppercase font-bold tracking-wider">Valor de Assinatura</span>
                       <strong className="text-sm text-primary block mt-0.5">
-                        {orgPlan === "beta" && "R$ 0/mês"}
-                        {orgPlan === "start" && "R$ 39,90/mês"}
-                        {orgPlan === "pro" && "R$ 79,90/mês"}
-                        {orgPlan === "max" && "R$ 149,90/mês"}
-                        {orgPlan === "pro_max" && "Consulte"}
+                        {isPlanLoading ? (
+                          <span className="text-on-surface-variant text-xs">Carregando...</span>
+                        ) : orgPlan ? (
+                          <>
+                            {orgPlan === "beta" && "R$ 0/mês"}
+                            {orgPlan === "start" && "R$ 39,90/mês"}
+                            {orgPlan === "pro" && "R$ 79,90/mês"}
+                            {orgPlan === "max" && "R$ 149,90/mês"}
+                            {orgPlan === "pro_max" && "Consulte"}
+                          </>
+                        ) : (
+                          <span className="text-error text-xs font-semibold">Indisponível</span>
+                        )}
                       </strong>
                     </div>
                   </div>
@@ -1945,7 +2157,7 @@ export default function SettingsView({
 
                 <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                   {/* Plan 1: Beta */}
-                  <div className={`bg-surface-container-lowest border rounded-2xl p-4.5 flex flex-col justify-between transition-all ${orgPlan === "beta" ? "border-primary ring-2 ring-primary/20" : "border-outline-variant/30 hover:border-primary/40"}`}>
+                  <div className={`bg-surface-container-lowest border rounded-2xl p-4.5 flex flex-col justify-between transition-all ${!isPlanLoading && orgPlan === "beta" ? "border-primary ring-2 ring-primary/20" : "border-outline-variant/30 hover:border-primary/40"}`}>
                     <div className="space-y-3.5">
                       <div className="space-y-1">
                         <span className="text-[8px] bg-surface-container-high text-on-surface-variant px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">Testes</span>
@@ -1969,7 +2181,7 @@ export default function SettingsView({
                   </div>
 
                   {/* Plan 2: Start */}
-                  <div className={`bg-surface-container-lowest border rounded-2xl p-4.5 flex flex-col justify-between transition-all ${orgPlan === "start" ? "border-primary ring-2 ring-primary/20" : "border-outline-variant/30 hover:border-primary/40"}`}>
+                  <div className={`bg-surface-container-lowest border rounded-2xl p-4.5 flex flex-col justify-between transition-all ${!isPlanLoading && orgPlan === "start" ? "border-primary ring-2 ring-primary/20" : "border-outline-variant/30 hover:border-primary/40"}`}>
                     <div className="space-y-3.5">
                       <div className="space-y-1">
                         <span className="text-[8px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">Profissional</span>
@@ -1993,7 +2205,7 @@ export default function SettingsView({
                   </div>
 
                   {/* Plan 3: Pro */}
-                  <div className={`bg-white border-2 rounded-2xl p-4.5 flex flex-col justify-between transition-all relative ${orgPlan === "pro" ? "border-primary shadow-lg shadow-primary/5" : "border-outline-variant/35 hover:border-primary/45"}`}>
+                  <div className={`bg-white border-2 rounded-2xl p-4.5 flex flex-col justify-between transition-all relative ${!isPlanLoading && orgPlan === "pro" ? "border-primary shadow-lg shadow-primary/5" : "border-outline-variant/35 hover:border-primary/45"}`}>
                     <div className="absolute top-0 right-0 bg-primary text-white text-[8px] font-bold px-2 py-0.5 rounded-bl-lg uppercase tracking-wider">
                       Recomendado
                     </div>
@@ -2020,7 +2232,7 @@ export default function SettingsView({
                   </div>
 
                   {/* Plan 4: Max */}
-                  <div className={`bg-surface-container-lowest border rounded-2xl p-4.5 flex flex-col justify-between transition-all ${orgPlan === "max" ? "border-primary ring-2 ring-primary/20" : "border-outline-variant/30 hover:border-primary/40"}`}>
+                  <div className={`bg-surface-container-lowest border rounded-2xl p-4.5 flex flex-col justify-between transition-all ${!isPlanLoading && orgPlan === "max" ? "border-primary ring-2 ring-primary/20" : "border-outline-variant/30 hover:border-primary/40"}`}>
                     <div className="space-y-3.5">
                       <div className="space-y-1">
                         <span className="text-[8px] bg-secondary-container text-on-secondary-container px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">Multi-usuário</span>
@@ -2044,7 +2256,7 @@ export default function SettingsView({
                   </div>
 
                   {/* Plan 5: PRO MAX */}
-                  <div className={`bg-slate-900 text-white border-2 rounded-2xl p-4.5 flex flex-col justify-between transition-all relative ${orgPlan === "pro_max" ? "border-amber-400 ring-2 ring-amber-400/20" : "border-slate-800 hover:border-amber-400/50"}`}>
+                  <div className={`bg-slate-900 text-white border-2 rounded-2xl p-4.5 flex flex-col justify-between transition-all relative ${!isPlanLoading && orgPlan === "pro_max" ? "border-amber-400 ring-2 ring-amber-400/20" : "border-slate-800 hover:border-amber-400/50"}`}>
                     <div className="absolute top-0 right-0 bg-amber-400 text-slate-950 text-[8px] font-bold px-2 py-0.5 rounded-bl-lg uppercase tracking-wider">
                       Empresarial Elite
                     </div>
@@ -2335,7 +2547,7 @@ export default function SettingsView({
             {activeSubTab === "admin" && isInternalAdmin && (
               <div className="space-y-6 animate-in fade-in duration-200">
                 <AdminSuspensionManager
-                  currentOrgId={currentUser.defaultOrganizationId}
+                  currentOrgId={effectiveOrgId}
                   onStatusChanged={() => {
                     fetchOrgSubscription();
                   }}

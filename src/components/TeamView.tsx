@@ -23,12 +23,15 @@ import { PlanGuard } from "./PlanGuard";
 
 interface TeamViewProps {
   currentUser: UserType;
+  currentOrg?: Organization | null;
+  activeOrgId?: string;
+  orgStatus?: "loading" | "ready" | "error" | "unselected";
 }
 
-export default function TeamView({ currentUser }: TeamViewProps) {
+export default function TeamView({ currentUser, currentOrg, activeOrgId, orgStatus }: TeamViewProps) {
   const [members, setMembers] = useState<OrganizationMember[]>([]);
   const [invites, setInvites] = useState<OrganizationInvite[]>([]);
-  const [organization, setOrganization] = useState<Organization | null>(null);
+  const [organization, setOrganization] = useState<Organization | null>(currentOrg || null);
   const [loading, setLoading] = useState(true);
   const [submittingInvite, setSubmittingInvite] = useState(false);
   const [updatingMember, setUpdatingMember] = useState<string | null>(null);
@@ -49,7 +52,7 @@ export default function TeamView({ currentUser }: TeamViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const orgId = currentUser.defaultOrganizationId;
+  const orgId = activeOrgId || currentOrg?.id || currentUser.defaultOrganizationId;
 
   const fetchTeamData = async () => {
     if (!orgId) {
@@ -301,7 +304,7 @@ export default function TeamView({ currentUser }: TeamViewProps) {
   }
 
   return (
-    <PlanGuard feature="hasTeamManagement" currentOrganization={organization}>
+    <PlanGuard feature="hasTeamManagement" currentOrganization={organization || currentOrg} orgStatus={loading ? "loading" : (orgStatus || "ready")}>
       <div className="space-y-6 text-left" id="team-view-container">
       {/* View Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">

@@ -1,6 +1,7 @@
 import { supabase } from "./lib/supabase";
 import { getInitialDemoData } from "./demoData";
 import { buildFactualDescription } from "./geminiLimits";
+import { normalizePlanId } from "./config/plans";
 import {
   validateUploadFile,
   parseDataUrl,
@@ -1015,7 +1016,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
       if (method === "GET") {
         try {
-          // Get user's organization memberships
+          // 1. Get user's organization memberships
           const { data: memberships, error: memErr } = await supabase
             .from("organization_members")
             .select("organization_id, role, status")
@@ -1025,52 +1026,49 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
             console.warn("Aviso ao buscar membros da organização:", memErr);
           }
 
-          const orgIds = memberships?.map((m) => m.organization_id) || [];
+          const memberOrgIds = (memberships || []).map((m) => m.organization_id);
+
+          // 2. Also check organizations owned by this user
+          const { data: ownedOrgs } = await supabase
+            .from("organizations")
+            .select("id")
+            .eq("owner_id", session.user.id);
+
+          const ownedOrgIds = (ownedOrgs || []).map((o) => o.id);
+
+          // 3. Always check user profile for default_organization_id
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("default_organization_id")
+            .eq("id", session.user.id)
+            .maybeSingle();
+
+          const profileOrgId = profile?.default_organization_id;
+
+          // 4. Also check active org in localStorage if client-side
+          const storedOrgId = typeof localStorage !== "undefined" ? localStorage.getItem("vega_crm_active_org_id") : null;
+
+          // Combine all unique IDs without deduplicating or merging by name
+          const allOrgIds = Array.from(new Set([
+            ...memberOrgIds,
+            ...ownedOrgIds,
+            ...(profileOrgId ? [profileOrgId] : []),
+            ...(storedOrgId ? [storedOrgId] : [])
+          ])).filter(Boolean);
 
           let orgs: any[] = [];
-          if (orgIds.length > 0) {
-            const { data: fetchedOrgs } = await supabase
+          if (allOrgIds.length > 0) {
+            const { data: fetchedOrgs, error: fetchErr } = await supabase
               .from("organizations")
               .select("*")
-              .in("id", orgIds);
+              .in("id", allOrgIds);
+
+            if (fetchErr) {
+              console.warn("Aviso ao buscar dados das organizações:", fetchErr);
+            }
 
             if (fetchedOrgs) {
               orgs = fetchedOrgs;
-            }
-          }
-
-          // Also check if user is owner of any organization
-          const { data: ownedOrgs } = await supabase
-            .from("organizations")
-            .select("*")
-            .eq("owner_id", session.user.id);
-
-          if (ownedOrgs) {
-            for (const owned of ownedOrgs) {
-              if (!orgs.some((o) => o.id === owned.id)) {
-                orgs.push(owned);
-              }
-            }
-          }
-
-          if (orgs.length === 0) {
-            // Check user profile for default_organization_id
-            const { data: profile } = await supabase
-              .from("profiles")
-              .select("default_organization_id")
-              .eq("id", session.user.id)
-              .maybeSingle();
-
-            if (profile?.default_organization_id) {
-              const { data: defaultOrg } = await supabase
-                .from("organizations")
-                .select("*")
-                .eq("id", profile.default_organization_id)
-                .maybeSingle();
-
-              if (defaultOrg) {
-                orgs.push(defaultOrg);
-              }
             }
           }
 
@@ -1092,7 +1090,7 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
               city: org.city || "",
               state: org.state || "",
               ownerId: org.owner_id,
-              plan: org.plan || "beta",
+              plan: normalizePlanId(org.plan),
               planChangedAt: org.plan_changed_at,
               plan_changed_at: org.plan_changed_at,
               nextPlanChangeAt: org.next_plan_change_at,
@@ -1251,6 +1249,177 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       }
     }
 
+    // Direct handler for GET /api/organizations/:id (revalidação estrita do plano e datas)
+    const singleOrgMatch = pathname.match(/^\/api\/organizations\/([a-zA-Z0-9_-]+)$/);
+    if (singleOrgMatch && method === "GET" && singleOrgMatch[1] !== "members" && singleOrgMatch[1] !== "invites") {
+      const orgId = singleOrgMatch[1];
+      const session = await getActiveUserSession();
+      if (!session?.user) return mockResponse({ error: "Não autorizado" }, 401);
+
+      try {
+        const { data: org, error: orgErr } = await supabase
+          .from("organizations")
+          .select("*")
+          .eq("id", orgId)
+          .maybeSingle();
+
+        if (orgErr) {
+          return mockResponse({ error: orgErr.message }, 400);
+        }
+        if (!org) {
+          return mockResponse({ error: "Organização não encontrada" }, 404);
+        }
+
+        const { data: membership } = await supabase
+          .from("organization_members")
+          .select("role, status")
+          .eq("organization_id", orgId)
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+
+        return mockResponse({
+          id: org.id,
+          name: org.name,
+          tradeName: org.trade_name || org.name,
+          document: org.document || org.billing_document || "",
+          creci: org.creci || "",
+          phone: org.phone || "",
+          email: org.email || "",
+          city: org.city || "",
+          state: org.state || "",
+          ownerId: org.owner_id,
+          plan: normalizePlanId(org.plan),
+          planChangedAt: org.plan_changed_at,
+          plan_changed_at: org.plan_changed_at,
+          nextPlanChangeAt: org.next_plan_change_at,
+          next_plan_change_at: org.next_plan_change_at,
+          subscriptionStatus: org.subscription_status || "active",
+          subscription_status: org.subscription_status || "active",
+          subscriptionExpiresAt: org.subscription_expires_at,
+          subscription_expires_at: org.subscription_expires_at,
+          maxMembers: org.max_members || 1,
+          max_members: org.max_members || 1,
+          accessStatus: org.access_status || "active",
+          access_status: org.access_status || "active",
+          userRole: membership?.role || (org.owner_id === session.user.id ? "owner" : "member"),
+          userStatus: membership?.status || "active"
+        });
+      } catch (err: any) {
+        return mockResponse({ error: `Erro ao buscar organização: ${err.message || err}` }, 500);
+      }
+    }
+
+    // OPERAÇÃO ESPECÍFICA: SELEÇÃO DA ORGANIZAÇÃO ATIVA
+    if ((pathname === "/api/organizations/select" || (pathname.startsWith("/api/organizations/") && pathname.endsWith("/select"))) && method === "POST") {
+      const session = await getActiveUserSession();
+      if (!session?.user) return mockResponse({ error: "Não autorizado" }, 401);
+
+      let targetOrgId = body?.organizationId || body?.organization_id;
+      if (!targetOrgId && pathname.startsWith("/api/organizations/")) {
+        const parts = pathname.split("/");
+        if (parts.length >= 4) {
+          targetOrgId = parts[parts.length - 2];
+        }
+      }
+
+      if (!targetOrgId || typeof targetOrgId !== "string" || !targetOrgId.trim()) {
+        return mockResponse({ error: "ID da organização é obrigatório." }, 400);
+      }
+      targetOrgId = targetOrgId.trim();
+
+      // 1. Verifica se a organização existe
+      const { data: org, error: orgErr } = await supabase
+        .from("organizations")
+        .select("*")
+        .eq("id", targetOrgId)
+        .maybeSingle();
+
+      if (orgErr) {
+        return mockResponse({ error: orgErr.message }, 400);
+      }
+      if (!org) {
+        return mockResponse({ error: "Organização não encontrada.", code: "ORG_NOT_FOUND" }, 404);
+      }
+
+      // 2. Valida vínculo ativo e autorização sobre a organização
+      const isOwner = org.owner_id === session.user.id;
+      let isActiveMember = false;
+      let memberRole = isOwner ? "owner" : "broker";
+
+      const { data: membership } = await supabase
+        .from("organization_members")
+        .select("role, status")
+        .eq("organization_id", targetOrgId)
+        .eq("user_id", session.user.id)
+        .maybeSingle();
+
+      if (membership && membership.status === "active") {
+        isActiveMember = true;
+        memberRole = membership.role || memberRole;
+      }
+
+      if (!isOwner && !isActiveMember) {
+        return mockResponse({
+          error: "Vínculo inativo ou sem autorização nesta organização.",
+          code: "UNAUTHORIZED_ORG"
+        }, 403);
+      }
+
+      // 3. Persiste profiles.default_organization_id após autenticação e validação estritas
+      const { data: updatedProfile, error: profileErr } = await supabase
+        .from("profiles")
+        .update({
+          default_organization_id: targetOrgId,
+          updatedAt: new Date().toISOString()
+        })
+        .eq("id", session.user.id)
+        .select()
+        .maybeSingle();
+
+      if (profileErr) {
+        return mockResponse({ error: `Erro ao persistir organização ativa: ${profileErr.message}` }, 400);
+      }
+
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("vega_crm_active_org_id", targetOrgId);
+      }
+
+      const mappedOrg = {
+        id: org.id,
+        name: org.name,
+        tradeName: org.trade_name || org.name,
+        document: org.document || org.billing_document || "",
+        creci: org.creci || "",
+        phone: org.phone || "",
+        email: org.email || "",
+        city: org.city || "",
+        state: org.state || "",
+        ownerId: org.owner_id,
+        plan: normalizePlanId(org.plan),
+        planChangedAt: org.plan_changed_at,
+        plan_changed_at: org.plan_changed_at,
+        nextPlanChangeAt: org.next_plan_change_at,
+        next_plan_change_at: org.next_plan_change_at,
+        subscriptionStatus: org.subscription_status || "active",
+        subscription_status: org.subscription_status || "active",
+        subscriptionExpiresAt: org.subscription_expires_at,
+        subscription_expires_at: org.subscription_expires_at,
+        maxMembers: org.max_members || 1,
+        max_members: org.max_members || 1,
+        accessStatus: org.access_status || "active",
+        access_status: org.access_status || "active",
+        userRole: memberRole,
+        userStatus: "active"
+      };
+
+      return mockResponse({
+        success: true,
+        organizationId: targetOrgId,
+        organization: mappedOrg,
+        profile: updatedProfile ? mapProfileFromDB(updatedProfile) : undefined
+      });
+    }
+
     // 1. SYSTEM STATUS
     if (pathname === "/api/status") {
       const isMissing = await checkSupabaseSchemaMissing();
@@ -1268,6 +1437,36 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
       if (!session?.user) {
         return mockResponse({ error: "Sessão expirada ou não autorizado. Por favor, faça login." }, 401);
       }
+
+      if (method === "PUT") {
+        const updatePayload: any = {};
+        // NÃO aceita defaultOrganizationId no endpoint de perfil - use POST /api/organizations/select
+        if (body?.name !== undefined) updatePayload.name = body.name;
+        if (body?.phone !== undefined) updatePayload.phone = body.phone;
+        if (body?.creci !== undefined) updatePayload.creci = body.creci;
+        if (body?.commercialName !== undefined) updatePayload.commercialName = body.commercialName;
+        if (body?.primaryCity !== undefined) updatePayload.primaryCity = body.primaryCity;
+        if (body?.actingType !== undefined) updatePayload.actingType = body.actingType;
+        if (body?.accountType !== undefined) updatePayload.account_type = body.accountType;
+        if (body?.onboardingCompleted !== undefined) updatePayload.onboardingCompleted = body.onboardingCompleted;
+
+        if (Object.keys(updatePayload).length > 0) {
+          updatePayload.updatedAt = new Date().toISOString();
+          const { data: updatedProfile, error: updateErr } = await supabase
+            .from("profiles")
+            .update(updatePayload)
+            .eq("id", session.user.id)
+            .select()
+            .maybeSingle();
+
+          if (updateErr) {
+            console.error("Erro ao atualizar perfil no Supabase:", updateErr);
+            return mockResponse({ error: updateErr.message }, 400);
+          }
+          return mockResponse(mapProfileFromDB(updatedProfile));
+        }
+      }
+
       // Get profile details
       const { data: profile, error } = await supabase
         .from("profiles")
@@ -3356,6 +3555,12 @@ async function _apiFetchInternal(input: RequestInfo | URL, init?: RequestInit): 
 
   // AUTH DEMO HANDLERS
   if (pathname === "/api/auth/me") {
+    if (method === "PUT") {
+      const existing = getDemoUser();
+      const updated = { ...existing, ...body };
+      localStorage.setItem("vega_crm_user", JSON.stringify(updated));
+      return mockResponse(updated);
+    }
     const user = getDemoUser();
     return mockResponse(user);
   }

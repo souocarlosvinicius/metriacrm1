@@ -134,3 +134,14 @@ export function getPlanDisplayName(planId: PlanId): string {
 export function getPlanPrice(planId: PlanId): number | null {
   return getPlanLimits(planId).price;
 }
+
+export function normalizePlanId(plan: any): PlanId {
+  if (!plan || typeof plan !== "string") return "beta";
+  const clean = plan.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (clean === "max" || clean === "plano_max") return "max";
+  if (clean === "pro_max" || clean === "promax" || clean === "plano_pro_max" || clean === "pro-max") return "pro_max";
+  if (clean === "pro" || clean === "plano_pro") return "pro";
+  if (clean === "start" || clean === "plano_start") return "start";
+  if (clean === "beta" || clean === "plano_beta") return "beta";
+  return "beta";
+}

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { LayoutDashboard, Home, Users, CalendarDays, Bell, Sparkles, Search, X, FolderSync, Handshake, Settings, ClipboardCheck, AlertTriangle, Clock, Check, Users2, TrendingUp, Keyboard } from "lucide-react";
+import { LayoutDashboard, Home, Users, CalendarDays, Bell, Sparkles, Search, X, FolderSync, Handshake, Settings, ClipboardCheck, AlertTriangle, Clock, Check, Users2, TrendingUp, Keyboard, Building2 } from "lucide-react";
 import { Property, Client, Task, DBStatus, User, Proposal, Visit } from "./types";
 import DashboardView from "./components/DashboardView";
 import PropertiesView from "./components/PropertiesView";
@@ -55,11 +55,15 @@ const SESSION_TIMESTAMP_KEY = "vega_crm_user_timestamp";
 export function saveUserSession(user: any) {
   localStorage.setItem("vega_crm_user", JSON.stringify(user));
   localStorage.setItem(SESSION_TIMESTAMP_KEY, Date.now().toString());
+  if (user?.defaultOrganizationId) {
+    localStorage.setItem("vega_crm_active_org_id", user.defaultOrganizationId);
+  }
 }
 
 export function clearUserSession() {
   localStorage.removeItem("vega_crm_user");
   localStorage.removeItem(SESSION_TIMESTAMP_KEY);
+  localStorage.removeItem("vega_crm_active_org_id");
 }
 
 export function checkAndCleanExpiredSession(): boolean {
@@ -166,6 +170,12 @@ export function App() {
               setCurrentUser(null);
             }
           } else if (user) {
+            const storedOrgId = typeof localStorage !== "undefined" ? localStorage.getItem("vega_crm_active_org_id") : null;
+            if (!user.defaultOrganizationId && storedOrgId) {
+              user.defaultOrganizationId = storedOrgId;
+            } else if (user.defaultOrganizationId && typeof localStorage !== "undefined") {
+              localStorage.setItem("vega_crm_active_org_id", user.defaultOrganizationId);
+            }
             setCurrentUser(user);
             saveUserSession(user);
           } else {
@@ -232,63 +242,133 @@ export function App() {
   // Active Organization, List and Subscription Plan calculations
   const [currentOrg, setCurrentOrg] = useState<any>(null);
   const [userOrganizations, setUserOrganizations] = useState<any[]>([]);
+  const [orgInconsistencyError, setOrgInconsistencyError] = useState<string | null>(null);
+  const [orgStatus, setOrgStatus] = useState<"loading" | "ready" | "error" | "unselected">("loading");
 
-  const fetchCurrentOrg = async (orgId: string | undefined) => {
+  const fetchCurrentOrg = async (expectedOrgId: string | undefined) => {
+    setOrgStatus("loading");
     try {
       const res = await apiFetch("/api/organizations");
       if (res.ok) {
         const orgs = await res.json();
         if (Array.isArray(orgs)) {
           setUserOrganizations(orgs);
-          const activeOrg = orgs.find((o: any) => o.id === orgId) || orgs[0];
-          if (activeOrg) {
-            setCurrentOrg(activeOrg);
+          if (expectedOrgId) {
+            // Regra 3: Não escolha silenciosamente orgs[0] quando o ID esperado não for encontrado.
+            const activeOrg = orgs.find((o: any) => o.id === expectedOrgId);
+            if (activeOrg) {
+              setCurrentOrg(activeOrg);
+              setOrgStatus("ready");
+              setOrgInconsistencyError(null);
+              if (typeof localStorage !== "undefined") {
+                localStorage.setItem("vega_crm_active_org_id", activeOrg.id);
+              }
+            } else {
+              console.warn(`[Org Inconsistency] Organização esperada "${expectedOrgId}" não encontrada nas organizações disponíveis:`, orgs.map(o => o.id));
+              setCurrentOrg(null);
+              setOrgStatus("unselected");
+              setOrgInconsistencyError(`Organização com ID ${expectedOrgId} não encontrada nas suas organizações.`);
+            }
+          } else if (orgs.length === 1) {
+            // Apenas se nenhum ID esperado foi especificado e há uma única organização disponível
+            await handleSelectOrganization(orgs[0].id);
+          } else if (orgs.length > 1) {
+            // Múltiplas organizações sem ID selecionado: requer seleção explícita
+            setCurrentOrg(null);
+            setOrgStatus("unselected");
+            setOrgInconsistencyError("Múltiplas organizações encontradas. Selecione qual organização deseja acessar.");
+          } else {
+            setCurrentOrg(null);
+            setOrgStatus("error");
+            setOrgInconsistencyError("Nenhuma organização vinculada a este usuário.");
           }
         }
+      } else {
+        setCurrentOrg(null);
+        setOrgStatus("error");
+        setOrgInconsistencyError("Erro ao carregar organizações no servidor.");
       }
     } catch (err) {
       console.error("Erro ao carregar organização ativa em App.tsx:", err);
+      setCurrentOrg(null);
+      setOrgStatus("error");
+      setOrgInconsistencyError("Falha de rede ao consultar organizações ativas.");
     }
   };
 
   const handleSelectOrganization = async (newOrgId: string) => {
-    const targetOrg = userOrganizations.find((o) => o.id === newOrgId);
-    if (targetOrg) {
-      setCurrentOrg(targetOrg);
-      if (currentUser) {
-        const updatedUser = {
-          ...currentUser,
-          defaultOrganizationId: newOrgId
-        };
-        setCurrentUser(updatedUser);
-        saveUserSession(updatedUser);
+    try {
+      // Regra 1: Operação específica para selecionar a organização ativa
+      const res = await apiFetch("/api/organizations/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ organizationId: newOrgId })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Erro ao selecionar organização");
       }
-      try {
-        await apiFetch("/api/auth/me", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ defaultOrganizationId: newOrgId })
-        });
-      } catch (e) {
-        console.warn("Aviso ao sincronizar defaultOrganizationId no perfil:", e);
+
+      const data = await res.json();
+      const targetOrg = data.organization || userOrganizations.find((o) => o.id === newOrgId);
+
+      if (targetOrg) {
+        setCurrentOrg(targetOrg);
+        setOrgStatus("ready");
+        setOrgInconsistencyError(null);
+        if (typeof localStorage !== "undefined") {
+          localStorage.setItem("vega_crm_active_org_id", newOrgId);
+        }
+        if (currentUser) {
+          const updatedUser = {
+            ...currentUser,
+            defaultOrganizationId: newOrgId
+          };
+          setCurrentUser(updatedUser);
+          saveUserSession(updatedUser);
+        }
       }
+    } catch (e: any) {
+      console.error("Erro ao selecionar organização ativa:", e);
+      setOrgInconsistencyError(e.message || "Erro ao selecionar organização.");
     }
   };
 
   useEffect(() => {
     if (currentUser) {
-      fetchCurrentOrg(currentUser.defaultOrganizationId || "demo-org-id");
+      if (currentUser.isDemo) {
+        setOrgStatus("ready");
+      } else {
+        const preferredOrgId = currentUser.defaultOrganizationId || (typeof localStorage !== "undefined" ? localStorage.getItem("vega_crm_active_org_id") : null) || undefined;
+        fetchCurrentOrg(preferredOrgId);
+      }
     } else {
       setCurrentOrg(null);
+      setOrgStatus("unselected");
+      setOrgInconsistencyError(null);
     }
 
     const handlePlanChange = (event: any) => {
       const detail = event.detail;
-      if (currentUser?.defaultOrganizationId) {
-        fetchCurrentOrg(currentUser.defaultOrganizationId);
+      const targetOrgId = detail?.orgId || currentUser?.defaultOrganizationId || (typeof localStorage !== "undefined" ? localStorage.getItem("vega_crm_active_org_id") : null);
+      if (targetOrgId) {
+        fetchCurrentOrg(targetOrgId);
       }
-      if (detail?.plan && currentOrg) {
-        setCurrentOrg((prev: any) => (prev ? { ...prev, plan: detail.plan } : prev));
+      if (detail?.plan && detail?.orgId) {
+        setCurrentOrg((prev: any) => {
+          if (prev && prev.id === detail.orgId) {
+            return {
+              ...prev,
+              plan: detail.plan,
+              planChangedAt: detail.planChangedAt || prev.planChangedAt,
+              plan_changed_at: detail.planChangedAt || prev.plan_changed_at,
+              nextPlanChangeAt: detail.nextPlanChangeAt || prev.nextPlanChangeAt,
+              next_plan_change_at: detail.nextPlanChangeAt || prev.next_plan_change_at
+            };
+          }
+          return prev;
+        });
       }
     };
 
@@ -302,7 +382,7 @@ export function App() {
     clientsCount: clients.length,
     propertiesCount: properties.length,
     membersCount: 1
-  });
+  }, orgStatus);
 
   // Selected entities for detail modal view
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
@@ -1390,6 +1470,67 @@ export function App() {
           </div>
         )}
 
+        {/* SELEÇÃO EXPLÍCITA E AUTORIZADA DE ORGANIZAÇÃO ATIVA */}
+        {currentUser && !currentUser.isDemo && (!currentOrg || orgInconsistencyError) && activeTab !== "settings" && (
+          <div className="max-w-2xl mx-auto my-6 p-6 bg-surface-container-low border border-primary/20 rounded-3xl shadow-sm text-left animate-in fade-in duration-300">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-3 bg-primary/10 text-primary rounded-2xl">
+                <Building2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-on-surface">Selecione sua Organização Ativa</h3>
+                <p className="text-xs text-on-surface-variant">
+                  {orgInconsistencyError || "Sua organização padrão não está selecionada. Escolha uma das organizações autorizadas:"}
+                </p>
+              </div>
+            </div>
+
+            {userOrganizations && userOrganizations.length > 0 ? (
+              <div className="space-y-2.5 mt-3">
+                <p className="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">
+                  Organizações Autorizadas ({userOrganizations.length})
+                </p>
+                <div className="grid grid-cols-1 gap-2">
+                  {userOrganizations.map((org: any) => (
+                    <div
+                      key={org.id}
+                      className="flex items-center justify-between p-3.5 bg-surface rounded-2xl border border-outline-variant/30 hover:border-primary/50 transition-all"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-bold text-sm text-on-surface">{org.name}</h4>
+                          <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-primary/10 text-primary uppercase">
+                            {org.plan}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-on-surface-variant font-mono mt-0.5">
+                          ID: {org.id} {org.userRole ? `• ${org.userRole === "owner" ? "Proprietário" : "Membro"}` : ""}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleSelectOrganization(org.id)}
+                        className="px-3.5 py-1.5 bg-primary text-on-primary font-medium text-xs rounded-xl hover:bg-primary/90 transition-all cursor-pointer shadow-sm"
+                      >
+                        Acessar
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-xs text-amber-700 dark:text-amber-400 mt-2 space-y-2">
+                <p className="font-semibold">Nenhuma organização autorizada encontrada para esta conta.</p>
+                <button
+                  onClick={() => fetchCurrentOrg(currentUser.defaultOrganizationId)}
+                  className="px-3 py-1.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors cursor-pointer"
+                >
+                  Tentar Novamente
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* AVISO DE CONTA SUSPENSA POR PENDÊNCIA FINANCEIRA */}
         {currentOrg && (currentOrg.accessStatus === "suspended" || currentOrg.access_status === "suspended") && activeTab !== "settings" ? (
           <React.Suspense fallback={<div className="p-8 text-center"><div className="w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin mx-auto"></div></div>}>
@@ -1433,6 +1574,9 @@ export function App() {
                 visits={visits}
                 dbStatus={dbStatus}
                 currentUser={currentUser}
+                currentOrg={currentOrg}
+                activeOrgId={currentOrg?.id || currentUser?.defaultOrganizationId || (typeof localStorage !== "undefined" ? localStorage.getItem("vega_crm_active_org_id") : null) || undefined}
+                orgStatus={orgStatus}
                 onAddTask={handleAddTask}
                 onNavigateToTab={(tab) => setActiveTab(tab)}
                 onSelectClient={(client) => setSelectedClient(client)}
@@ -1566,6 +1710,18 @@ export function App() {
             >
               <SettingsView
                 currentUser={currentUser}
+                currentOrg={currentOrg}
+                activeOrgId={currentOrg?.id || currentUser?.defaultOrganizationId || (typeof localStorage !== "undefined" ? localStorage.getItem("vega_crm_active_org_id") : null) || undefined}
+                onOrganizationChanged={(updatedOrg) => {
+                  setCurrentOrg(updatedOrg);
+                  if (updatedOrg?.id && typeof localStorage !== "undefined") {
+                    localStorage.setItem("vega_crm_active_org_id", updatedOrg.id);
+                  }
+                }}
+                userOrganizations={userOrganizations}
+                onSelectOrganization={handleSelectOrganization}
+                orgInconsistencyError={orgInconsistencyError}
+                orgStatus={orgStatus}
                 properties={properties}
                 clients={clients}
                 tasks={tasks}
@@ -1618,7 +1774,12 @@ export function App() {
               exit={{ opacity: 0, y: -15 }}
               transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
             >
-              <TeamView currentUser={currentUser} />
+              <TeamView
+                currentUser={currentUser}
+                currentOrg={currentOrg}
+                activeOrgId={currentOrg?.id || currentUser?.defaultOrganizationId || (typeof localStorage !== "undefined" ? localStorage.getItem("vega_crm_active_org_id") : null) || undefined}
+                orgStatus={orgStatus}
+              />
             </motion.div>
           )}
         </AnimatePresence>

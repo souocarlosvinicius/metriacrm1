@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { ShieldCheck, ShieldAlert, RefreshCw, AlertCircle, CheckCircle2, History, Building2 } from "lucide-react";
+import { ShieldCheck, ShieldAlert, RefreshCw, AlertCircle, CheckCircle2, History, Building2, CreditCard } from "lucide-react";
 import { apiFetch } from "../api";
 import { Organization } from "../types";
 
@@ -518,12 +518,28 @@ export default function AdminSuspensionManager({
         </div>
       )}
 
+      {/* Cobranças Manuais e Gestão Financeira Interna */}
+      <div className="space-y-3 pt-4 border-t border-outline-variant/20">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-xs font-bold text-on-surface">
+            <CreditCard className="w-4 h-4 text-primary" />
+            <span>Cobranças Manuais e Gestão Financeira (manual_charges)</span>
+          </div>
+          <span className="text-[10px] bg-primary/10 text-primary font-bold px-2 py-0.5 rounded-full">
+            Painel Interno
+          </span>
+        </div>
+        <p className="text-xs text-on-surface-variant font-medium">
+          Gerenciamento manual de ordens de pagamento, PIX e reconciliações de faturamento das imobiliárias parceiras.
+        </p>
+      </div>
+
       {/* Histórico Recente de Auditoria de Suspensão */}
       {Array.isArray(orgDetails?.auditHistory) && orgDetails.auditHistory.length > 0 && (
         <div className="space-y-2 pt-2 border-t border-outline-variant/20">
           <div className="flex items-center gap-2 text-xs font-bold text-on-surface-variant">
             <History className="w-3.5 h-3.5" />
-            <span>Histórico de Auditoria de Suspensões / Reativações</span>
+            <span>Histórico de Alterações e Auditoria de Suspensões / Reativações (plan-changes)</span>
           </div>
           <div className="space-y-1.5 max-h-36 overflow-y-auto">
             {orgDetails.auditHistory.map((item: any) => (

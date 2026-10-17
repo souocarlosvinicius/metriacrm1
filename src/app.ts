@@ -35,7 +35,8 @@ import {
 } from "./serverEnv.js";
 import {
   PLAN_LIMITS,
-  getMaxMembersByPlan
+  getMaxMembersByPlan,
+  normalizePlanId
 } from "./config/plans.js";
 
 const app = express();
@@ -1224,15 +1225,40 @@ app.get("/api/organizations", requireAuth, async (req: any, res: any) => {
       return res.status(400).json({ error: memErr.message });
     }
 
-    const orgIds = (memberships || []).map(m => m.organization_id);
-    if (orgIds.length === 0) {
+    const memberOrgIds = (memberships || []).map(m => m.organization_id);
+
+    // Also get organizations owned by this user
+    const { data: ownedOrgs } = await supabaseAdmin
+      .from("organizations")
+      .select("id")
+      .eq("owner_id", req.userId);
+
+    const ownedOrgIds = (ownedOrgs || []).map(o => o.id);
+
+    // Also get user's default_organization_id from profile
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("default_organization_id")
+      .eq("id", req.userId)
+      .maybeSingle();
+
+    const defaultOrgId = profile?.default_organization_id;
+
+    // Combine all IDs uniquely (DO NOT merge or delete orgs with identical names)
+    const allOrgIds = Array.from(new Set([
+      ...memberOrgIds,
+      ...ownedOrgIds,
+      ...(defaultOrgId ? [defaultOrgId] : [])
+    ])).filter(Boolean);
+
+    if (allOrgIds.length === 0) {
       return res.json([]);
     }
 
     const { data: orgs, error: orgsErr } = await supabaseAdmin
       .from("organizations")
       .select("*")
-      .in("id", orgIds);
+      .in("id", allOrgIds);
 
     if (orgsErr) {
       console.error("Erro ao buscar organizações:", orgsErr);
@@ -1244,14 +1270,14 @@ app.get("/api/organizations", requireAuth, async (req: any, res: any) => {
       return {
         id: org.id,
         name: org.name,
-        tradeName: org.trade_name,
-        creci: org.creci,
-        phone: org.phone,
-        email: org.email,
-        city: org.city,
-        state: org.state,
+        tradeName: org.trade_name || org.name,
+        creci: org.creci || "",
+        phone: org.phone || "",
+        email: org.email || "",
+        city: org.city || "",
+        state: org.state || "",
         ownerId: org.owner_id,
-        plan: org.plan,
+        plan: normalizePlanId(org.plan),
         accessStatus: org.access_status || "active",
         access_status: org.access_status || "active",
         suspendedAt: org.suspended_at,
@@ -1270,14 +1296,264 @@ app.get("/api/organizations", requireAuth, async (req: any, res: any) => {
         subscription_expires_at: org.subscription_expires_at,
         maxMembers: org.max_members || 1,
         max_members: org.max_members || 1,
-        userRole: membership?.role,
-        userStatus: membership?.status
+        userRole: membership?.role || (org.owner_id === req.userId ? "owner" : "member"),
+        userStatus: membership?.status || "active"
       };
     }) || [];
 
     return res.json(mappedOrgs);
   } catch (err: any) {
     console.error("Erro no endpoint GET /api/organizations:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET SINGLE ORGANIZATION BY ID (CONFIRMAÇÃO DIRETA E REVALIDAÇÃO)
+app.get("/api/organizations/:id", requireAuth, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não está configurado." });
+  }
+
+  const orgId = req.params.id;
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const { data: membership } = await supabaseAdmin
+      .from("organization_members")
+      .select("role, status")
+      .eq("organization_id", orgId)
+      .eq("user_id", req.userId)
+      .maybeSingle();
+
+    const { data: org, error: orgErr } = await supabaseAdmin
+      .from("organizations")
+      .select("*")
+      .eq("id", orgId)
+      .maybeSingle();
+
+    if (orgErr) {
+      return res.status(400).json({ error: orgErr.message });
+    }
+
+    if (!org) {
+      return res.status(404).json({ error: "Organização não encontrada." });
+    }
+
+    if (!membership && org.owner_id !== req.userId) {
+      return res.status(403).json({ error: "Acesso negado a esta organização." });
+    }
+
+    return res.json({
+      id: org.id,
+      name: org.name,
+      tradeName: org.trade_name || org.name,
+      creci: org.creci || "",
+      phone: org.phone || "",
+      email: org.email || "",
+      city: org.city || "",
+      state: org.state || "",
+      ownerId: org.owner_id,
+      plan: normalizePlanId(org.plan),
+      accessStatus: org.access_status || "active",
+      access_status: org.access_status || "active",
+      planChangedAt: org.plan_changed_at,
+      plan_changed_at: org.plan_changed_at,
+      nextPlanChangeAt: org.next_plan_change_at,
+      next_plan_change_at: org.next_plan_change_at,
+      subscriptionStatus: org.subscription_status || "active",
+      subscription_status: org.subscription_status || "active",
+      subscriptionExpiresAt: org.subscription_expires_at,
+      subscription_expires_at: org.subscription_expires_at,
+      maxMembers: org.max_members || 1,
+      max_members: org.max_members || 1,
+      userRole: membership?.role || (org.owner_id === req.userId ? "owner" : "broker"),
+      userStatus: membership?.status || "active"
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/auth/me
+app.get("/api/auth/me", requireAuth, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não está configurado." });
+  }
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const { data: profile, error } = await supabaseAdmin
+      .from("profiles")
+      .select("*")
+      .eq("id", req.userId)
+      .maybeSingle();
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    if (!profile) {
+      return res.status(404).json({ error: "Perfil não encontrado." });
+    }
+
+    return res.json({
+      id: profile.id,
+      name: profile.name,
+      email: profile.email,
+      role: profile.role,
+      phone: profile.phone,
+      defaultOrganizationId: profile.default_organization_id,
+      accountType: profile.account_type || "broker",
+      currentRole: profile.current_role
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/organizations/select & POST /api/organizations/:id/select
+const handleSelectActiveOrg = async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não está configurado." });
+  }
+
+  const rawOrgId = req.params?.id || req.body?.organizationId || req.body?.organization_id;
+  if (!rawOrgId || typeof rawOrgId !== "string" || !rawOrgId.trim()) {
+    return res.status(400).json({ error: "ID da organização é obrigatório." });
+  }
+  const orgId = rawOrgId.trim();
+
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    // 1. Verifica se a organização existe
+    const { data: org, error: orgErr } = await supabaseAdmin
+      .from("organizations")
+      .select("*")
+      .eq("id", orgId)
+      .maybeSingle();
+
+    if (orgErr) {
+      return res.status(400).json({ error: orgErr.message });
+    }
+    if (!org) {
+      return res.status(404).json({ error: "Organização não encontrada.", code: "ORG_NOT_FOUND" });
+    }
+
+    // 2. Valida vínculo ativo e autorização sobre a organização
+    const isOwner = org.owner_id === req.userId;
+    let isActiveMember = false;
+    let memberRole = isOwner ? "owner" : "broker";
+
+    const { data: membership } = await supabaseAdmin
+      .from("organization_members")
+      .select("role, status")
+      .eq("organization_id", orgId)
+      .eq("user_id", req.userId)
+      .maybeSingle();
+
+    if (membership && membership.status === "active") {
+      isActiveMember = true;
+      memberRole = membership.role || memberRole;
+    }
+
+    if (!isOwner && !isActiveMember) {
+      return res.status(403).json({
+        error: "Vínculo inativo ou sem autorização nesta organização.",
+        code: "UNAUTHORIZED_ORG"
+      });
+    }
+
+    // 3. Persiste profiles.default_organization_id após autenticação e autorização estritas
+    const { data: updatedProfile, error: profileErr } = await supabaseAdmin
+      .from("profiles")
+      .update({
+        default_organization_id: orgId,
+        updatedAt: new Date().toISOString()
+      })
+      .eq("id", req.userId)
+      .select()
+      .maybeSingle();
+
+    if (profileErr) {
+      return res.status(400).json({ error: `Erro ao persistir organização ativa: ${profileErr.message}` });
+    }
+
+    const mappedOrg = {
+      id: org.id,
+      name: org.name,
+      tradeName: org.trade_name || org.name,
+      creci: org.creci || "",
+      phone: org.phone || "",
+      email: org.email || "",
+      city: org.city || "",
+      state: org.state || "",
+      ownerId: org.owner_id,
+      plan: normalizePlanId(org.plan),
+      accessStatus: org.access_status || "active",
+      access_status: org.access_status || "active",
+      planChangedAt: org.plan_changed_at,
+      plan_changed_at: org.plan_changed_at,
+      nextPlanChangeAt: org.next_plan_change_at,
+      next_plan_change_at: org.next_plan_change_at,
+      subscriptionStatus: org.subscription_status || "active",
+      subscription_status: org.subscription_status || "active",
+      maxMembers: org.max_members || 1,
+      max_members: org.max_members || 1,
+      userRole: memberRole,
+      userStatus: "active"
+    };
+
+    return res.json({
+      success: true,
+      organizationId: orgId,
+      organization: mappedOrg,
+      profile: updatedProfile
+    });
+  } catch (err: any) {
+    console.error("Erro ao selecionar organização ativa:", err);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+app.post("/api/organizations/select", requireAuth, handleSelectActiveOrg);
+app.post("/api/organizations/:id/select", requireAuth, handleSelectActiveOrg);
+
+// PUT /api/auth/me (edição de perfil - NÃO aceita edição arbitrária de default_organization_id)
+app.put("/api/auth/me", requireAuth, async (req: any, res: any) => {
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({ error: "Supabase não está configurado." });
+  }
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    const updatePayload: any = {};
+    if (req.body.name !== undefined) updatePayload.name = req.body.name;
+    if (req.body.phone !== undefined) updatePayload.phone = req.body.phone;
+    if (req.body.accountType !== undefined) updatePayload.account_type = req.body.accountType;
+
+    const { data: profile, error } = await supabaseAdmin
+      .from("profiles")
+      .update(updatePayload)
+      .eq("id", req.userId)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.json({
+      id: profile.id,
+      defaultOrganizationId: profile.default_organization_id,
+      name: profile.name,
+      email: profile.email
+    });
+  } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
 });

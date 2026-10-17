@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Property, Client, Task, DBStatus, User, Proposal, Visit } from "../types";
+import { Property, Client, Task, DBStatus, User, Proposal, Visit, PlanId } from "../types";
 import { apiFetch } from "../api";
+import { normalizePlanId } from "../config/plans";
 import { getClientAlerts, getAlertBadgeStyles, Alert } from "../utils/alerts";
 import {
   ResponsiveContainer,
@@ -62,6 +63,9 @@ interface DashboardViewProps {
   visits?: Visit[];
   dbStatus: DBStatus | null;
   currentUser?: User | null;
+  currentOrg?: any;
+  activeOrgId?: string;
+  orgStatus?: "loading" | "ready" | "error" | "unselected";
   onAddTask: (task: Omit<Task, "id">) => Promise<void>;
   onNavigateToTab: (tab: string) => void;
   onPrefillClientForTask?: (client: Client) => void;
@@ -76,9 +80,12 @@ export default function DashboardView({
   clients = [], 
   tasks = [], 
   proposals = [],
-  visits = [],
+  visits = [], 
   dbStatus, 
   currentUser, 
+  currentOrg,
+  activeOrgId,
+  orgStatus,
   onAddTask, 
   onNavigateToTab,
   onPrefillClientForTask,
@@ -114,21 +121,35 @@ export default function DashboardView({
       .slice(0, 5);
   }, [properties]);
 
-  const [currentPlan, setCurrentPlan] = useState<"beta" | "start" | "pro" | "max" | "pro_max">("beta");
-  const [orgName, setOrgName] = useState<string>("");
+  const [currentPlan, setCurrentPlan] = useState<PlanId | null>(
+    currentOrg?.plan ? normalizePlanId(currentOrg.plan) : null
+  );
+  const [orgName, setOrgName] = useState<string>(currentOrg?.name || "");
+
+  useEffect(() => {
+    if (currentOrg) {
+      setCurrentPlan(normalizePlanId(currentOrg.plan));
+      setOrgName(currentOrg.name || "");
+    } else {
+      setCurrentPlan(null);
+      setOrgName("");
+    }
+  }, [currentOrg]);
 
   useEffect(() => {
     const fetchOrgPlan = async () => {
-      const orgId = currentUser?.defaultOrganizationId;
+      const orgId = activeOrgId || currentOrg?.id || currentUser?.defaultOrganizationId || (typeof localStorage !== "undefined" ? localStorage.getItem("vega_crm_active_org_id") : null);
       if (!orgId) return;
       try {
         const res = await apiFetch("/api/organizations");
         if (res.ok) {
           const orgs = await res.json();
-          const activeOrg = orgs.find((o: any) => o.id === orgId);
-          if (activeOrg) {
-            setCurrentPlan(activeOrg.plan || "beta");
-            setOrgName(activeOrg.name || "");
+          if (Array.isArray(orgs)) {
+            const activeOrg = orgs.find((o: any) => o.id === orgId);
+            if (activeOrg) {
+              setCurrentPlan(normalizePlanId(activeOrg.plan));
+              setOrgName(activeOrg.name || "");
+            }
           }
         }
       } catch (err) {
@@ -136,7 +157,18 @@ export default function DashboardView({
       }
     };
     fetchOrgPlan();
-  }, [currentUser]);
+
+    const handleOrgPlanChange = (event: any) => {
+      const detail = event.detail;
+      if (detail?.plan) {
+        setCurrentPlan(normalizePlanId(detail.plan));
+      }
+    };
+    window.addEventListener("organization-plan-changed", handleOrgPlanChange);
+    return () => {
+      window.removeEventListener("organization-plan-changed", handleOrgPlanChange);
+    };
+  }, [currentUser, currentOrg, activeOrgId]);
 
   // Dynamic Goal Tracking States & Storage
   const [goalPeriod, setGoalPeriod] = useState<"mensal" | "semestral" | "anual">("mensal");
@@ -1586,7 +1618,7 @@ export default function DashboardView({
           </p>
         </div>
 
-        {currentPlan === "max" ? (
+        {currentPlan === "max" || currentPlan === "pro_max" ? (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5 animate-in fade-in duration-300">
             {/* Team Metric 1 */}
             <div className="bg-surface-container-low border border-outline-variant/20 p-5 rounded-2xl text-left space-y-2">
